@@ -1,0 +1,512 @@
+import pg from 'pg';
+import bcrypt from 'bcrypt';
+import { newDb } from 'pg-mem';
+import { config } from '../config/index.js';
+import { logger } from '../services/logger.js';
+
+const { Pool } = pg;
+
+export interface QueryResult<T = any> {
+  rows: T[];
+  rowCount: number;
+}
+
+export interface DatabaseAdapter {
+  query: <T = any>(text: string, params?: any[]) => Promise<QueryResult<T>>;
+  close: () => Promise<void>;
+  isRealPostgres: boolean;
+}
+
+let dbAdapter: DatabaseAdapter | null = null;
+let dbInitPromise: Promise<DatabaseAdapter> | null = null;
+
+export async function getDatabase(): Promise<DatabaseAdapter> {
+  if (dbAdapter) {
+    return dbAdapter;
+  }
+
+  if (dbInitPromise) {
+    return dbInitPromise;
+  }
+
+  dbInitPromise = (async () => {
+    let selectedAdapter: DatabaseAdapter | null = null;
+
+    if (config.DATABASE_URL && config.NODE_ENV !== 'test') {
+      logger.info('Connecting to PostgreSQL database via DATABASE_URL...');
+      try {
+        const pool = new Pool({
+          connectionString: config.DATABASE_URL,
+          ssl:
+            config.DATABASE_SSL || config.DATABASE_URL.includes('render.com')
+              ? { rejectUnauthorized: false }
+              : undefined,
+          max: 10,
+          idleTimeoutMillis: 30000,
+          connectionTimeoutMillis: 3000,
+        });
+
+        pool.on('error', (err) => {
+          logger.error({ err: err.message }, 'Unexpected PostgreSQL pool error');
+        });
+
+        // Test connectivity before committing to real postgres
+        await pool.query('SELECT 1');
+
+        selectedAdapter = {
+          query: async <T = any>(text: string, params?: any[]) => {
+            const res = await pool.query(text, params);
+            return {
+              rows: res.rows as T[],
+              rowCount: res.rowCount ?? res.rows.length,
+            };
+          },
+          close: async () => {
+            await pool.end();
+            dbAdapter = null;
+            dbInitPromise = null;
+          },
+          isRealPostgres: true,
+        };
+
+        logger.info('Connected to PostgreSQL successfully.');
+      } catch (connErr: any) {
+        logger.warn(
+          { err: connErr.message },
+          'PostgreSQL host unreachable or failed to connect. Falling back to in-memory PostgreSQL engine (pg-mem).'
+        );
+        selectedAdapter = null;
+      }
+    }
+
+    if (!selectedAdapter) {
+      logger.warn(
+        'Initializing in-memory PostgreSQL engine (pg-mem) for preview/fallback environment.'
+      );
+      const memDb = newDb();
+
+      // Register custom functions if needed
+      memDb.public.registerFunction({
+        name: 'now',
+        implementation: () => new Date().toISOString(),
+      });
+
+      const pgAdapter = memDb.adapters.createPg();
+      const pool = new pgAdapter.Pool();
+
+      selectedAdapter = {
+        query: async <T = any>(text: string, params?: any[]) => {
+          const res = await pool.query(text, params);
+          return {
+            rows: res.rows as T[],
+            rowCount: res.rowCount ?? (res.rows ? res.rows.length : 0),
+          };
+        },
+        close: async () => {
+          await pool.end();
+          dbAdapter = null;
+          dbInitPromise = null;
+        },
+        isRealPostgres: false,
+      };
+    }
+
+    await initSchemaAndSeed(selectedAdapter);
+    dbAdapter = selectedAdapter;
+    return dbAdapter;
+  })();
+
+  return dbInitPromise;
+}
+
+export async function query<T = any>(text: string, params?: any[]): Promise<QueryResult<T>> {
+  const db = await getDatabase();
+  return db.query<T>(text, params);
+}
+
+export async function initDatabase(): Promise<void> {
+  await getDatabase();
+}
+
+async function initSchemaAndSeed(targetAdapter?: DatabaseAdapter): Promise<void> {
+  const target = targetAdapter || dbAdapter;
+  if (!target) return;
+
+  // 1. Create tables
+  await target.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id SERIAL PRIMARY KEY,
+      username VARCHAR(100) UNIQUE NOT NULL,
+      password_hash VARCHAR(255) NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  await target.query(`
+    CREATE TABLE IF NOT EXISTS settings (
+      key VARCHAR(100) PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  await target.query(`
+    CREATE TABLE IF NOT EXISTS whatsapp_auth (
+      id VARCHAR(255) PRIMARY KEY,
+      data JSONB NOT NULL,
+      updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  await target.query(`
+    CREATE TABLE IF NOT EXISTS whatsapp_connection (
+      id VARCHAR(50) PRIMARY KEY,
+      status VARCHAR(50) NOT NULL DEFAULT 'disconnected',
+      phone_number VARCHAR(50),
+      pairing_code VARCHAR(20),
+      pairing_expires_at TIMESTAMPTZ,
+      last_error TEXT,
+      connected_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  await target.query(`
+    CREATE TABLE IF NOT EXISTS session_configs (
+      id SERIAL PRIMARY KEY,
+      session_name VARCHAR(100) NOT NULL,
+      start_time VARCHAR(10) NOT NULL,
+      end_time VARCHAR(10),
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      target_wins INTEGER NOT NULL DEFAULT 10,
+      min_confidence INTEGER NOT NULL DEFAULT 65,
+      signal_delay_min INTEGER NOT NULL DEFAULT 15,
+      signal_delay_max INTEGER NOT NULL DEFAULT 15,
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  await target.query(`
+    CREATE TABLE IF NOT EXISTS bot_sessions (
+      id SERIAL PRIMARY KEY,
+      session_config_id INTEGER,
+      session_name VARCHAR(100) NOT NULL,
+      schedule_date VARCHAR(20) NOT NULL,
+      date VARCHAR(20),
+      start_time VARCHAR(10) NOT NULL,
+      end_time VARCHAR(10),
+      status VARCHAR(50) NOT NULL DEFAULT 'SCHEDULED',
+      target_wins INTEGER NOT NULL DEFAULT 10,
+      wins INTEGER NOT NULL DEFAULT 0,
+      losses INTEGER NOT NULL DEFAULT 0,
+      total_signals INTEGER NOT NULL DEFAULT 0,
+      win_rate NUMERIC(5,2) NOT NULL DEFAULT 0.00,
+      started_at TIMESTAMPTZ,
+      completed_at TIMESTAMPTZ,
+      target_completion_status VARCHAR(20) DEFAULT NULL,
+      target_completion_scheduled_for TIMESTAMPTZ,
+      target_completion_sent_at TIMESTAMPTZ,
+      target_message_sent_at TIMESTAMPTZ,
+      history_message_status VARCHAR(20) DEFAULT NULL,
+      history_scheduled_for TIMESTAMPTZ,
+      history_message_sent_at TIMESTAMPTZ,
+      history_sent_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  await target.query(`
+    CREATE TABLE IF NOT EXISTS signals (
+      id SERIAL PRIMARY KEY,
+      issue_number VARCHAR(100) UNIQUE NOT NULL,
+      prediction VARCHAR(20) NOT NULL,
+      predicted_color VARCHAR(50) NOT NULL,
+      confidence INTEGER NOT NULL,
+      status VARCHAR(30) NOT NULL DEFAULT 'SCHEDULED',
+      scheduled_at TIMESTAMPTZ,
+      sent_at TIMESTAMPTZ,
+      actual_number INTEGER,
+      actual_size VARCHAR(20),
+      actual_color VARCHAR(50),
+      sent_to VARCHAR(255) NOT NULL,
+      session_id INTEGER,
+      settled_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // Migrations for existing tables
+  try {
+    await target.query(`ALTER TABLE signals ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ;`);
+    await target.query(`ALTER TABLE signals ADD COLUMN IF NOT EXISTS session_id INTEGER;`);
+    await target.query(`ALTER TABLE signals ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP;`);
+    await target.query(`ALTER TABLE bot_sessions ADD COLUMN IF NOT EXISTS target_completion_status VARCHAR(20) DEFAULT NULL;`);
+    await target.query(`ALTER TABLE bot_sessions ADD COLUMN IF NOT EXISTS target_completion_scheduled_for TIMESTAMPTZ;`);
+    await target.query(`ALTER TABLE bot_sessions ADD COLUMN IF NOT EXISTS target_completion_sent_at TIMESTAMPTZ;`);
+    await target.query(`ALTER TABLE bot_sessions ADD COLUMN IF NOT EXISTS history_message_status VARCHAR(20) DEFAULT NULL;`);
+    await target.query(`ALTER TABLE bot_sessions ADD COLUMN IF NOT EXISTS history_scheduled_for TIMESTAMPTZ;`);
+    await target.query(`ALTER TABLE bot_sessions ADD COLUMN IF NOT EXISTS history_sent_at TIMESTAMPTZ;`);
+  } catch {
+    // Ignore migration warnings on in-memory db
+  }
+
+  await target.query(`
+    CREATE TABLE IF NOT EXISTS wingo_results (
+      issue_number VARCHAR(100) PRIMARY KEY,
+      number INTEGER NOT NULL,
+      size VARCHAR(20) NOT NULL,
+      colors TEXT NOT NULL,
+      premium VARCHAR(50),
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  await target.query(`
+    CREATE TABLE IF NOT EXISTS delivery_logs (
+      id SERIAL PRIMARY KEY,
+      type VARCHAR(50) NOT NULL,
+      destination VARCHAR(255) NOT NULL,
+      message TEXT NOT NULL,
+      status VARCHAR(20) NOT NULL,
+      error TEXT,
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  await target.query(`
+    CREATE TABLE IF NOT EXISTS session_reminders (
+      id SERIAL PRIMARY KEY,
+      session_config_id INTEGER,
+      session_name VARCHAR(100) NOT NULL,
+      schedule_date VARCHAR(20) NOT NULL,
+      session_time VARCHAR(10) NOT NULL,
+      reminder_time VARCHAR(10) NOT NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+      destination VARCHAR(255),
+      message TEXT,
+      error TEXT,
+      sent_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  await target.query(`
+    CREATE TABLE IF NOT EXISTS message_templates (
+      key VARCHAR(50) PRIMARY KEY,
+      name VARCHAR(100) NOT NULL,
+      template TEXT NOT NULL,
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  try {
+    await target.query(`ALTER TABLE bot_sessions ADD COLUMN IF NOT EXISTS date VARCHAR(20)`);
+    await target.query(`ALTER TABLE bot_sessions ADD COLUMN IF NOT EXISTS end_time VARCHAR(10)`);
+    await target.query(`ALTER TABLE bot_sessions ADD COLUMN IF NOT EXISTS target_message_sent_at TIMESTAMPTZ`);
+    await target.query(`ALTER TABLE bot_sessions ADD COLUMN IF NOT EXISTS history_message_sent_at TIMESTAMPTZ`);
+    await target.query(`ALTER TABLE session_configs ADD COLUMN IF NOT EXISTS end_time VARCHAR(10)`);
+    await target.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_bot_sessions_config_date ON bot_sessions(session_config_id, schedule_date);`);
+    await target.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_session_reminders_unique ON session_reminders(session_config_id, schedule_date, session_time);`);
+    await target.query(`CREATE INDEX IF NOT EXISTS idx_session_reminders_created ON session_reminders(created_at DESC);`);
+  } catch {
+    // Already exists or unsupported
+  }
+
+  // Seed default templates
+  const defaultTemplates = [
+    {
+      key: 'SIGNAL',
+      name: 'Signal Message',
+      template: `🎯 WinGo 1M Signal
+━━━━━━━━━━━━━━━━
+📊 Period: {issueNumber}
+🎲 Prediction: {prediction}
+🎨 Color: {color}
+📈 Confidence: {confidence}%
+⏱️ Time: {time}
+━━━━━━━━━━━━━━━━
+⚠️ Play responsibly`,
+    },
+    {
+      key: 'WIN',
+      name: 'WIN Result Message',
+      template: `✅ WIN!
+Period: {issueNumber}
+Result: {resultNumber} ({resultSize}, {resultColor})
+Our Signal: {predictionSize} {predictionColor} ✅`,
+    },
+    {
+      key: 'LOSS',
+      name: 'LOSS Result Message',
+      template: `❌ LOSS
+Period: {issueNumber}
+Result: {resultNumber} ({resultSize}, {resultColor})
+Our Signal: {predictionSize} {predictionColor} ❌`,
+    },
+    {
+      key: 'TEST',
+      name: 'Test Message',
+      template: `🧪 TEST MESSAGE
+━━━━━━━━━━━━━━━━
+📊 Period: {issueNumber}
+🎲 Prediction: {prediction}
+🎨 Color: {color}
+📈 Confidence: {confidence}%
+⏱️ Time: {time}
+━━━━━━━━━━━━━━━━`,
+    },
+    {
+      key: 'TARGET_COMPLETE',
+      name: 'Session Target Completed',
+      template: `🎯 SESSION TARGET COMPLETED
+━━━━━━━━━━━━━━━━
+🏆 Target: {targetWins} WIN
+✅ Wins: {wins}
+❌ Losses: {losses}
+📊 Total Signals: {totalSignals}
+📈 Win Rate: {winRate}%
+⏰ Session: {sessionName}
+🕐 Started: {startTime}
+🕐 Completed: {endTime}
+━━━━━━━━━━━━━━━━
+🎉 Today's session target has been completed successfully.`,
+    },
+    {
+      key: 'SESSION_HISTORY',
+      name: 'Session History Summary',
+      template: `📋 SESSION HISTORY
+━━━━━━━━━━━━━━━━
+⏰ Session: {sessionName}
+🕐 Time: {startTime} → {endTime}
+
+Total Predictions: {totalSignals}
+
+✅ WIN: {wins}
+❌ LOSS: {losses}
+
+📈 Win Rate: {winRate}%
+
+━━━━━━━━━━━━━━━━
+🏆 Target: {targetWins} WIN
+🎯 Status: {status}
+━━━━━━━━━━━━━━━━
+
+{signalsList}`,
+    },
+    {
+      key: 'REMINDER',
+      name: 'Pre-Session Reminder',
+      template: `🔔 SESSION STARTING SOON
+━━━━━━━━━━━━━━━━
+💰 PREPARE YOUR FUNDS
+
+Your next WinGo session will start in {minutes_remaining} minutes.
+
+⏰ Session: {session_time}
+🎯 Target: {target} WIN
+
+🌐 Website:
+{website_link}
+
+Please prepare your funds and be ready.
+
+━━━━━━━━━━━━━━━━
+⚠️ Play responsibly.`,
+    },
+  ];
+
+  for (const t of defaultTemplates) {
+    await target.query(
+      `INSERT INTO message_templates (key, name, template, enabled)
+       VALUES ($1, $2, $3, TRUE)
+       ON CONFLICT (key) DO NOTHING;`,
+      [t.key, t.name, t.template]
+    );
+  }
+
+  // Seed default connection state row
+  await target.query(`
+    INSERT INTO whatsapp_connection (id, status)
+    VALUES ('primary', 'disconnected')
+    ON CONFLICT (id) DO NOTHING;
+  `);
+
+  // Seed Admin user
+  const adminRes = await target.query('SELECT id FROM users WHERE username = $1', [
+    config.ADMIN_USERNAME,
+  ]);
+  if (adminRes.rowCount === 0) {
+    const salt = await bcrypt.genSalt(10);
+    const hash = await bcrypt.hash(config.ADMIN_PASSWORD, salt);
+    await target.query(
+      'INSERT INTO users (username, password_hash) VALUES ($1, $2)',
+      [config.ADMIN_USERNAME, hash]
+    );
+    logger.info({ username: config.ADMIN_USERNAME }, 'Default admin account created');
+  }
+
+  // Seed Default Settings
+  const settingsToSeed = [
+    { key: 'newsletter_jid', value: config.DEFAULT_NEWSLETTER_JID || '' },
+    { key: 'confidence_threshold', value: config.DEFAULT_CONFIDENCE_THRESHOLD.toString() },
+    { key: 'polling_interval', value: config.DEFAULT_POLLING_INTERVAL.toString() },
+    { key: 'wingo_api_url', value: 'https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json' },
+    { key: 'wingo_source_mode', value: 'auto' },
+    { key: 'bot_timezone', value: 'Asia/Karachi' },
+    { key: 'bot_mode', value: 'STOPPED' },
+    { key: 'session_scheduler_enabled', value: 'false' },
+    { key: 'active_session_id', value: '' },
+    { key: 'schedule_enabled', value: 'false' },
+    { key: 'signal_delay_min', value: '15' },
+    { key: 'signal_delay_max', value: '15' },
+    { key: 'missed_session_policy', value: 'START_IF_WITHIN_WINDOW' },
+    { key: 'missed_session_grace_minutes', value: '120' },
+    { key: 'reminder_enabled', value: 'true' },
+    { key: 'reminder_minutes_before', value: '30' },
+    { key: 'reminder_website_url', value: 'https://example.com' },
+  ];
+
+  for (const s of settingsToSeed) {
+    await target.query(
+      `INSERT INTO settings (key, value)
+       VALUES ($1, $2)
+       ON CONFLICT (key) DO NOTHING;`,
+      [s.key, s.value]
+    );
+  }
+
+  // Update any existing settings or session configs with legacy 40s to 15s
+  await target.query(
+    `UPDATE settings SET value = '15', updated_at = NOW() WHERE key IN ('signal_delay_min', 'signal_delay_max') AND value = '40';`
+  );
+  await target.query(
+    `UPDATE session_configs SET signal_delay_min = 15, signal_delay_max = 15 WHERE signal_delay_max = 40;`
+  );
+
+  // Seed Default Daily Session Configurations (Runs indefinitely until target WIN is reached)
+  const defaultSessions = [
+    { name: 'Morning', startTime: '06:00', targetWins: 10, minConf: 65, delayMin: 15, delayMax: 15 },
+    { name: 'Afternoon', startTime: '14:00', targetWins: 10, minConf: 65, delayMin: 15, delayMax: 15 },
+    { name: 'Night', startTime: '20:00', targetWins: 10, minConf: 65, delayMin: 15, delayMax: 15 },
+  ];
+
+  const existingConfigsRes = await target.query('SELECT COUNT(*) as cnt FROM session_configs');
+  const count = parseInt(existingConfigsRes.rows[0]?.cnt || '0', 10);
+  if (count === 0) {
+    for (const sess of defaultSessions) {
+      await target.query(
+        `INSERT INTO session_configs (session_name, start_time, enabled, target_wins, min_confidence, signal_delay_min, signal_delay_max)
+         VALUES ($1, $2, TRUE, $3, $4, $5, $6);`,
+        [sess.name, sess.startTime, sess.targetWins, sess.minConf, sess.delayMin, sess.delayMax]
+      );
+    }
+    logger.info('Default session schedules (Morning 06:00, Afternoon 14:00, Night 20:00) initialized.');
+  }
+
+  logger.info('Database schema and default records initialized.');
+}
