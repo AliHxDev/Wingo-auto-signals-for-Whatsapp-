@@ -467,6 +467,19 @@ class ApiService {
   async getReminderHistory(limit = 50): Promise<import('../types/index.js').SessionReminderRecord[]> {
     return this.request(`/api/reminders/history?limit=${limit}`);
   }
+
+  // System Diagnostics & Health (Render + Supabase Status)
+  async getHealth(): Promise<{
+    status: string;
+    timestamp: string;
+    uptimeSeconds: number;
+    database: { connected: boolean; type: string; isRealPostgres: boolean };
+    whatsapp: { status: string; isRegistered: boolean; phoneNumber?: string };
+    bot: { running: boolean; mode: string; lastIssue?: string };
+    platform: { isRender: boolean; externalUrl: string | null };
+  }> {
+    return this.request('/health');
+  }
 }
 
 export const api = new ApiService();

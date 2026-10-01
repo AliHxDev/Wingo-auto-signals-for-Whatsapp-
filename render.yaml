@@ -2,11 +2,12 @@ services:
   - type: web
     name: wingo-whatsapp-bot
     env: node
-    plan: standard
+    plan: free
     region: oregon
     buildCommand: npm install && npm run build
     startCommand: npm run start
-    healthCheckPath: /api/health
+    healthCheckPath: /health
+    autoDeploy: true
     envVars:
       - key: NODE_ENV
         value: production
@@ -21,11 +22,13 @@ services:
       - key: ADMIN_USERNAME
         value: admin
       - key: ADMIN_PASSWORD
-        generateValue: true
+        value: admin123456
 
 databases:
   - name: wingo-postgres
-    plan: standard
+    plan: free
     region: oregon
-    databaseName: wingo
+    databaseName: wingo_bot
     user: wingo_user
+
+

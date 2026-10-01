@@ -54,7 +54,8 @@ async function startServer() {
   // General API Rate Limiting
   app.use('/api', apiRateLimiter);
 
-  // Mount API Routes
+  // Mount Health Routes (both /health and /api/health for Render/monitoring compatibility)
+  app.use('/health', healthRouter);
   app.use('/api/health', healthRouter);
   app.use('/api/auth', authRouter);
   app.use('/api/whatsapp', whatsAppRouter);
@@ -77,6 +78,21 @@ async function startServer() {
     await sessionReminderService.start();
   } catch (err: any) {
     logger.error({ err: err.message }, 'Database or service initialization warning');
+  }
+
+  // Self-keepalive pinger for Render free tier (runs when deployed on Render or when SELF_PING_URL configured)
+  const renderUrl = process.env.RENDER_EXTERNAL_URL || process.env.SELF_PING_URL;
+  if (renderUrl) {
+    const pingTarget = renderUrl.endsWith('/health') ? renderUrl : `${renderUrl.replace(/\/$/, '')}/health`;
+    logger.info({ pingTarget }, 'Starting Render free-tier self-keepalive pinger (every 9m)');
+    setInterval(async () => {
+      try {
+        const pingRes = await fetch(pingTarget);
+        logger.debug({ status: pingRes.status }, 'Self-keepalive ping dispatched');
+      } catch (err: any) {
+        logger.debug({ err: err.message }, 'Self-keepalive ping skipped or network wait');
+      }
+    }, 9 * 60 * 1000); // Ping every 9 minutes to stay ahead of 15m idle limit
   }
 
   // Vite development middleware or static production serving

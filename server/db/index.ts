@@ -32,48 +32,107 @@ export async function getDatabase(): Promise<DatabaseAdapter> {
   dbInitPromise = (async () => {
     let selectedAdapter: DatabaseAdapter | null = null;
 
-    if (config.DATABASE_URL && config.NODE_ENV !== 'test') {
-      logger.info('Connecting to PostgreSQL database via DATABASE_URL...');
-      try {
-        const pool = new Pool({
-          connectionString: config.DATABASE_URL,
-          ssl:
-            config.DATABASE_SSL || config.DATABASE_URL.includes('render.com')
-              ? { rejectUnauthorized: false }
-              : undefined,
-          max: 10,
-          idleTimeoutMillis: 30000,
-          connectionTimeoutMillis: 3000,
-        });
+    const isTestEnv =
+      process.env.NODE_ENV === 'test' ||
+      process.env.VITEST === 'true' ||
+      config.NODE_ENV === 'test';
 
-        pool.on('error', (err) => {
-          logger.error({ err: err.message }, 'Unexpected PostgreSQL pool error');
-        });
+    if (config.DATABASE_URL && !isTestEnv) {
+      const dbUrl = config.DATABASE_URL.trim();
+      const isLocal = dbUrl.includes('localhost') || dbUrl.includes('127.0.0.1');
+      const useSsl = config.DATABASE_SSL || !isLocal;
+      const isSupabase = dbUrl.includes('supabase') || dbUrl.includes('pooler');
 
-        // Test connectivity before committing to real postgres
-        await pool.query('SELECT 1');
+      logger.info(
+        { ssl: useSsl, isSupabase },
+        'Connecting to PostgreSQL database via DATABASE_URL...'
+      );
 
-        selectedAdapter = {
-          query: async <T = any>(text: string, params?: any[]) => {
-            const res = await pool.query(text, params);
-            return {
-              rows: res.rows as T[],
-              rowCount: res.rowCount ?? res.rows.length,
-            };
-          },
-          close: async () => {
-            await pool.end();
-            dbAdapter = null;
-            dbInitPromise = null;
-          },
-          isRealPostgres: true,
-        };
+      const maxRetries = 3;
+      let lastErr: any = null;
 
-        logger.info('Connected to PostgreSQL successfully.');
-      } catch (connErr: any) {
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          let pool: any;
+          try {
+            pool = new Pool({
+              connectionString: dbUrl,
+              ssl: useSsl ? { rejectUnauthorized: false } : undefined,
+              max: 10,
+              idleTimeoutMillis: 30000,
+              connectionTimeoutMillis: 10000,
+              keepAlive: true,
+              keepAliveInitialDelayMillis: 10000,
+            });
+            await pool.query('SELECT 1');
+          } catch (sslErr: any) {
+            // If SSL was rejected or not supported by server (e.g. Render internal network connection)
+            if (
+              useSsl &&
+              (sslErr.message?.includes('SSL') ||
+                sslErr.message?.includes('ssl') ||
+                sslErr.message?.includes('The server does not support SSL'))
+            ) {
+              logger.info(
+                'SSL rejected by PostgreSQL server, connecting without SSL (Render internal mode)...'
+              );
+              pool = new Pool({
+                connectionString: dbUrl,
+                ssl: undefined,
+                max: 10,
+                idleTimeoutMillis: 30000,
+                connectionTimeoutMillis: 10000,
+                keepAlive: true,
+                keepAliveInitialDelayMillis: 10000,
+              });
+              await pool.query('SELECT 1');
+            } else {
+              throw sslErr;
+            }
+          }
+
+          pool.on('error', (err: any) => {
+            logger.error({ err: err.message }, 'Unexpected PostgreSQL pool error');
+          });
+
+          selectedAdapter = {
+            query: async <T = any>(text: string, params?: any[]) => {
+              const res = await pool.query(text, params);
+              return {
+                rows: res.rows as T[],
+                rowCount: res.rowCount ?? res.rows.length,
+              };
+            },
+            close: async () => {
+              await pool.end();
+              dbAdapter = null;
+              dbInitPromise = null;
+            },
+            isRealPostgres: true,
+          };
+
+          logger.info('Connected to PostgreSQL successfully.');
+          break;
+        } catch (connErr: any) {
+          lastErr = connErr;
+          logger.warn(
+            { attempt, maxRetries, err: connErr.message },
+            'PostgreSQL connection attempt failed, retrying...'
+          );
+          // If DNS fails (host does not exist), do not retry endlessly
+          if (connErr.code === 'ENOTFOUND' || connErr.code === 'EAI_AGAIN') {
+            break;
+          }
+          if (attempt < maxRetries) {
+            await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
+          }
+        }
+      }
+
+      if (!selectedAdapter && lastErr) {
         logger.warn(
-          { err: connErr.message },
-          'PostgreSQL host unreachable or failed to connect. Falling back to in-memory PostgreSQL engine (pg-mem).'
+          { err: lastErr.message },
+          'PostgreSQL host unreachable after retries. Falling back to in-memory PostgreSQL engine (pg-mem).'
         );
         selectedAdapter = null;
       }

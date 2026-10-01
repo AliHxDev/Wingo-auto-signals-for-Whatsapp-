@@ -19,6 +19,11 @@ import {
   Link,
   History,
   Check,
+  Server,
+  Database,
+  Copy,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { api } from '../services/api.js';
 import type { AppSettings, WinGoStatus, ReminderSettings, SessionReminderRecord } from '../types/index.js';
@@ -48,6 +53,12 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const [wingoTestResult, setWingoTestResult] = useState<any>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
 
+  // 24/7 Hosting & Database Diagnostics State
+  const [systemHealth, setSystemHealth] = useState<any>(null);
+  const [healthLoading, setHealthLoading] = useState(false);
+  const [copiedHealthUrl, setCopiedHealthUrl] = useState(false);
+  const [showDeployGuide, setShowDeployGuide] = useState(false);
+
   // Pre-Session Reminder State
   const [reminderEnabled, setReminderEnabled] = useState(true);
   const [reminderMinutesBefore, setReminderMinutesBefore] = useState(30);
@@ -61,6 +72,18 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const [testReminderResult, setTestReminderResult] = useState<string | null>(null);
   const [reminderHistory, setReminderHistory] = useState<SessionReminderRecord[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+
+  const loadHealthData = async () => {
+    try {
+      setHealthLoading(true);
+      const res = await api.getHealth();
+      setSystemHealth(res);
+    } catch {
+      // Ignore
+    } finally {
+      setHealthLoading(false);
+    }
+  };
 
   // Load reminder settings & history
   const loadReminderData = async () => {
@@ -85,7 +108,17 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
 
   useEffect(() => {
     loadReminderData();
+    loadHealthData();
   }, []);
+
+  const handleCopyHealthUrl = () => {
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    const healthUrl = `${origin}/health`;
+    navigator.clipboard.writeText(healthUrl);
+    setCopiedHealthUrl(true);
+    onNotification(`Health check URL copied: ${healthUrl}`);
+    setTimeout(() => setCopiedHealthUrl(false), 2500);
+  };
 
   const handleSaveReminderSettings = async () => {
     if (!websiteUrl.trim()) {
@@ -298,6 +331,142 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
         <p className="text-xs text-neutral-400 mt-0.5">
           Configuration is persisted directly in PostgreSQL and applied immediately to the active bot runner
         </p>
+      </div>
+
+      {/* 24/7 Hosting & Database Status (Render & Supabase) */}
+      <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-xl space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <Server className="w-5 h-5 text-teal-400" />
+            <div>
+              <h3 className="text-sm font-bold text-white tracking-tight">24/7 Hosting & Database Status</h3>
+              <p className="text-xs text-neutral-400">Zero-cost production setup with Render & Supabase Free Tier</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={loadHealthData}
+            disabled={healthLoading}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-neutral-950 hover:bg-neutral-800 text-neutral-300 border border-neutral-800 rounded-xl text-xs font-semibold transition-colors disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${healthLoading ? 'animate-spin' : ''}`} />
+            <span>Check Status</span>
+          </button>
+        </div>
+
+        {/* Status Indicators Grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+          {/* Database Engine Status */}
+          <div className="p-3.5 rounded-xl bg-neutral-950 border border-neutral-800 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-neutral-400 flex items-center gap-1.5">
+                <Database className="w-3.5 h-3.5 text-neutral-400" />
+                <span>Database Engine</span>
+              </span>
+              {systemHealth?.database?.isRealPostgres ? (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                  <CheckCircle2 className="w-3 h-3" />
+                  <span>PostgreSQL (Connected)</span>
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30">
+                  <AlertCircle className="w-3 h-3" />
+                  <span>In-Memory Fallback</span>
+                </span>
+              )}
+            </div>
+            <p className="text-[11px] text-neutral-400 leading-relaxed">
+              {systemHealth?.database?.isRealPostgres
+                ? 'Persistent storage active. WhatsApp credentials, sessions, and templates survive all server restarts.'
+                : 'Preview mode. On Render, link a PostgreSQL database so sessions & WhatsApp auth keys persist 24/7.'}
+            </p>
+          </div>
+
+          {/* 24/7 Keep-Alive & Health Ping */}
+          <div className="p-3.5 rounded-xl bg-neutral-950 border border-neutral-800 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-neutral-400 flex items-center gap-1.5">
+                <Globe className="w-3.5 h-3.5 text-neutral-400" />
+                <span>24/7 Keep-Alive</span>
+              </span>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-teal-500/10 text-teal-400 border border-teal-500/30">
+                <Zap className="w-3 h-3" />
+                <span>Active (/health)</span>
+              </span>
+            </div>
+            <p className="text-[11px] text-neutral-400 leading-relaxed">
+              Uptime: <strong className="text-white font-mono">{systemHealth?.uptimeSeconds ? `${Math.floor(systemHealth.uptimeSeconds / 60)}m ${systemHealth.uptimeSeconds % 60}s` : 'Active'}</strong> • Internal pinger runs every 9m to prevent Render sleeping.
+            </p>
+          </div>
+        </div>
+
+        {/* UptimeRobot Keep-Alive Endpoint Box */}
+        <div className="p-3.5 bg-neutral-950 rounded-xl border border-neutral-800/80 flex flex-wrap items-center justify-between gap-3">
+          <div className="space-y-0.5">
+            <div className="text-xs font-semibold text-white flex items-center gap-1.5">
+              <span>Uptime Monitoring / Keep-Alive URL</span>
+            </div>
+            <p className="text-[11px] text-neutral-400">
+              Ping this URL every 5 minutes in <strong className="text-neutral-200">UptimeRobot (Free)</strong> so Render never goes idle.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleCopyHealthUrl}
+            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-neutral-900 hover:bg-neutral-800 text-neutral-200 border border-neutral-700 rounded-lg text-xs font-semibold transition-all active:scale-95"
+          >
+            {copiedHealthUrl ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+            <span>{copiedHealthUrl ? 'Copied!' : 'Copy Health URL'}</span>
+          </button>
+        </div>
+
+        {/* Deploy to Render Free Tier Guide Toggle */}
+        <div className="pt-1">
+          <button
+            type="button"
+            onClick={() => setShowDeployGuide(!showDeployGuide)}
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-teal-400 hover:text-teal-300 transition-colors"
+          >
+            <span>{showDeployGuide ? 'Hide Render Free Setup Guide' : '📖 View Step-by-Step Render Deployment Guide (with Render PostgreSQL)'}</span>
+            {showDeployGuide ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+          </button>
+
+          {showDeployGuide && (
+            <div className="mt-3 p-4 bg-neutral-950 rounded-xl border border-neutral-800 text-xs text-neutral-300 space-y-3 leading-relaxed">
+              <div className="space-y-1">
+                <p className="font-bold text-white flex items-center gap-1.5">
+                  <span className="w-4 h-4 rounded-full bg-teal-500/20 text-teal-400 text-[10px] flex items-center justify-center font-bold">A</span>
+                  <span>Method 1: 1-Click Automatic Blueprint (Easiest)</span>
+                </p>
+                <p className="text-neutral-400 text-[11px] pl-5">
+                  This repo contains a pre-configured <code className="text-emerald-400 font-mono">render.yaml</code>. On Render, click <strong>New + → Blueprint</strong>, connect your repo, and Render will automatically create both the <strong>Web Service</strong> and the <strong>Render PostgreSQL database</strong> linked together with zero manual configuration!
+                </p>
+              </div>
+
+              <div className="space-y-1">
+                <p className="font-bold text-white flex items-center gap-1.5">
+                  <span className="w-4 h-4 rounded-full bg-teal-500/20 text-teal-400 text-[10px] flex items-center justify-center font-bold">B</span>
+                  <span>Method 2: Manual Setup on Render</span>
+                </p>
+                <p className="text-neutral-400 text-[11px] pl-5">
+                  1. Click <strong>New + → PostgreSQL</strong> on Render (Plan: Free, Name: <code className="text-neutral-200">wingo-db</code>). Copy the <strong>Internal Database URL</strong>.<br />
+                  2. Click <strong>New + → Web Service</strong> (Plan: Free). Set Build: <code className="text-emerald-400 font-mono">npm install && npm run build</code> and Start: <code className="text-emerald-400 font-mono">npm run start</code>.<br />
+                  3. In Environment Variables, paste <code className="text-teal-300 font-mono">DATABASE_URL</code> = <em>(Your Render Internal Database URL)</em>.
+                </p>
+              </div>
+
+              <div className="space-y-1">
+                <p className="font-bold text-white flex items-center gap-1.5">
+                  <span className="w-4 h-4 rounded-full bg-teal-500/20 text-teal-400 text-[10px] flex items-center justify-center font-bold">C</span>
+                  <span>Keep Awake 24/7 with UptimeRobot (Free):</span>
+                </p>
+                <p className="text-neutral-400 text-[11px] pl-5">
+                  Register at <a href="https://uptimerobot.com" target="_blank" rel="noreferrer" className="text-teal-400 underline">UptimeRobot.com</a> (free), add an HTTP monitor pointing to your Render domain: <code className="text-emerald-400 font-mono">https://your-service.onrender.com/health</code> every <strong>5 minutes</strong>.
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       <form onSubmit={handleSave} className="space-y-6">
