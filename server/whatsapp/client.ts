@@ -26,6 +26,7 @@ export interface WhatsAppClientState {
   phoneNumber: string | null;
   pairingCode: string | null;
   pairingExpiresAt: string | null;
+  qrCode?: string | null;
   lastConnectedAt: string | null;
   lastError: string | null;
   reconnectAttempts: number;
@@ -40,6 +41,7 @@ export class WhatsAppManager {
   private status: WhatsAppStatus = 'not_paired';
   private phoneNumber: string | null = null;
   private pairingCode: string | null = null;
+  private qrCodeDataUrl: string | null = null;
   private pairingExpiresAt: Date | null = null;
   private lastConnectedAt: Date | null = null;
   private lastError: string | null = null;
@@ -51,6 +53,7 @@ export class WhatsAppManager {
   private isInitializing = false;
   private initPromise: Promise<WASocket> | null = null;
   private clearAuthFn: (() => Promise<void>) | null = null;
+  private saveCredsFn: (() => Promise<void>) | null = null;
   private lastTestMessageSentAt = 0;
 
   constructor() {
@@ -192,6 +195,7 @@ export class WhatsAppManager {
         await this.persistState();
 
         const { state, saveCreds, clearAuth } = await usePostgresAuthState();
+        this.saveCredsFn = saveCreds;
         this.clearAuthFn = clearAuth;
 
         const baileysLogger = pino({ level: 'silent' });
@@ -210,7 +214,7 @@ export class WhatsAppManager {
           auth: state,
           printQRInTerminal: false,
           logger: baileysLogger,
-          browser: Browsers.macOS('Desktop'),
+          browser: Browsers.ubuntu('Chrome'),
           syncFullHistory: false,
           generateHighQualityLinkPreview: true,
           connectTimeoutMs: 60000,
@@ -244,13 +248,24 @@ export class WhatsAppManager {
    * Connection state from Baileys is the authoritative source of truth.
    */
   private async handleConnectionUpdate(update: Partial<BaileysConnectionState>): Promise<void> {
-    const { connection, lastDisconnect } = update;
+    const { connection, lastDisconnect, qr } = update;
+
+    if (qr) {
+      try {
+        const QRCode = await import('qrcode');
+        this.qrCodeDataUrl = await QRCode.toDataURL(qr);
+        logger.info('Live WhatsApp QR code generated for scanning');
+      } catch (err: any) {
+        logger.warn({ err: err.message }, 'Failed to render QR code data URL');
+      }
+    }
 
     if (connection === 'open') {
       this.status = 'connected';
       this.reconnectAttempts = 0; // Reset exponential backoff on successful connection (Requirement 9)
       this.isPairingInProgress = false;
       this.pairingCode = null;
+      this.qrCodeDataUrl = null;
       this.pairingExpiresAt = null;
       this.lastConnectedAt = new Date();
       this.lastError = null;
@@ -570,7 +585,18 @@ export class WhatsAppManager {
 
       // Give WhatsApp 3.5s to establish cryptographic session channels
       await new Promise((resolve) => setTimeout(resolve, 3500));
-      return await targetSock.requestPairingCode(cleanPhone);
+      const code = await targetSock.requestPairingCode(cleanPhone);
+
+      // Persist credentials immediately so 515 restart doesn't wipe them
+      try {
+        if (this.saveCredsFn) {
+          await this.saveCredsFn();
+        }
+      } catch (err: any) {
+        logger.warn({ err: err.message }, 'Failed to persist credentials immediately after pairing code generation');
+      }
+
+      return code;
     };
 
     try {
@@ -851,6 +877,7 @@ export class WhatsAppManager {
       phoneNumber: this.phoneNumber,
       pairingCode: isPairingExpired ? null : this.pairingCode,
       pairingExpiresAt: this.pairingExpiresAt?.toISOString() || null,
+      qrCode: isConnected ? null : this.qrCodeDataUrl,
       lastConnectedAt: this.lastConnectedAt?.toISOString() || null,
       lastError: this.lastError,
       reconnectAttempts: this.reconnectAttempts,

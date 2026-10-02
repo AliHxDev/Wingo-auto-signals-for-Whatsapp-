@@ -40,6 +40,7 @@ export interface WhatsAppStatus {
   phoneNumber: string | null;
   pairingCode: string | null;
   pairingExpiresAt: string | null;
+  qrCode?: string | null;
   lastConnectedAt: string | null;
   lastError: string | null;
   reconnectAttempts: number;
