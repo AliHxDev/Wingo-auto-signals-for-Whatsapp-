@@ -9,10 +9,8 @@ import {
   CheckCircle2,
   AlertCircle,
   Info,
-  Globe,
   RefreshCw,
   ExternalLink,
-  Zap,
   Bell,
   Send,
   RotateCcw,
@@ -20,15 +18,8 @@ import {
   History,
   Check,
   Server,
-  Database,
-  Copy,
-  ChevronDown,
-  ChevronUp,
-  Eye,
-  EyeOff,
-  Key,
-  Terminal,
-  ShieldCheck,
+  Globe,
+  Zap,
 } from 'lucide-react';
 import { api } from '../services/api.js';
 import type { AppSettings, WinGoStatus, ReminderSettings, SessionReminderRecord } from '../types/index.js';
@@ -57,25 +48,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const [testingWingo, setTestingWingo] = useState(false);
   const [wingoTestResult, setWingoTestResult] = useState<any>(null);
   const [validationError, setValidationError] = useState<string | null>(null);
-
-  // 24/7 Hosting & Database Diagnostics State
-  const [systemHealth, setSystemHealth] = useState<any>(null);
-  const [healthLoading, setHealthLoading] = useState(false);
-  const [copiedHealthUrl, setCopiedHealthUrl] = useState(false);
-  const [showDeployGuide, setShowDeployGuide] = useState(false);
-
-  // Runtime Database & Environment Variable Management State
-  const [dbUrlInput, setDbUrlInput] = useState('');
-  const [dbSsl, setDbSsl] = useState(true);
-  const [showDbPassword, setShowDbPassword] = useState(false);
-  const [isConnectingDb, setIsConnectingDb] = useState(false);
-  const [dbResultMsg, setDbResultMsg] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
-  const [envInfo, setEnvInfo] = useState<any>(null);
-  const [showEnvManager, setShowEnvManager] = useState(false);
-  const [adminUsernameInput, setAdminUsernameInput] = useState('admin');
-  const [serverPortInput, setServerPortInput] = useState('3000');
-  const [nodeEnvInput, setNodeEnvInput] = useState('production');
-  const [isSavingEnv, setIsSavingEnv] = useState(false);
+  const [savingChannel, setSavingChannel] = useState(false);
 
   // Pre-Session Reminder State
   const [reminderEnabled, setReminderEnabled] = useState(true);
@@ -91,18 +64,6 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const [reminderHistory, setReminderHistory] = useState<SessionReminderRecord[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
-  const loadHealthData = async () => {
-    try {
-      setHealthLoading(true);
-      const res = await api.getHealth();
-      setSystemHealth(res);
-    } catch {
-      // Ignore
-    } finally {
-      setHealthLoading(false);
-    }
-  };
-
   // Load reminder settings & history
   const loadReminderData = async () => {
     try {
@@ -117,85 +78,16 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
       setReminderTemplate(remSettings.template);
       setReminderDestination(remSettings.destination);
       setReminderHistory(remHistory);
-    } catch (err: any) {
-      // Ignore or log softly
+    } catch {
+      // Ignore softly
     } finally {
       setReminderLoading(false);
     }
   };
 
-  // Load environment variables & runtime database info
-  const loadEnvData = async () => {
-    try {
-      const res = await api.getEnvironment();
-      setEnvInfo(res);
-      if (res.rawEnv) {
-        if (res.rawEnv.ADMIN_USERNAME) setAdminUsernameInput(res.rawEnv.ADMIN_USERNAME);
-        if (res.rawEnv.PORT) setServerPortInput(res.rawEnv.PORT);
-        if (res.rawEnv.NODE_ENV) setNodeEnvInput(res.rawEnv.NODE_ENV);
-        if (res.rawEnv.DATABASE_SSL) setDbSsl(res.rawEnv.DATABASE_SSL !== 'false');
-      }
-    } catch {
-      // Ignore
-    }
-  };
-
   useEffect(() => {
     loadReminderData();
-    loadHealthData();
-    loadEnvData();
   }, []);
-
-  const handleConnectDatabase = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!dbUrlInput.trim()) {
-      setDbResultMsg({ type: 'error', message: 'Please enter a valid PostgreSQL Database URL.' });
-      return;
-    }
-    setIsConnectingDb(true);
-    setDbResultMsg(null);
-    try {
-      const res = await api.updateDatabaseConnection(dbUrlInput.trim(), dbSsl);
-      setDbResultMsg({ type: 'success', message: res.message });
-      onNotification('PostgreSQL connected and tables synced successfully!');
-      setDbUrlInput('');
-      await loadHealthData();
-      await loadEnvData();
-      onRefreshSettings();
-    } catch (err: any) {
-      setDbResultMsg({ type: 'error', message: err.message || 'Failed to connect to database' });
-      onNotification(err.message || 'Database connection failed', true);
-    } finally {
-      setIsConnectingDb(false);
-    }
-  };
-
-  const handleSaveEnv = async () => {
-    setIsSavingEnv(true);
-    try {
-      const res = await api.updateEnvironment({
-        ADMIN_USERNAME: adminUsernameInput.trim(),
-        PORT: serverPortInput.trim(),
-        NODE_ENV: nodeEnvInput.trim(),
-        DATABASE_SSL: dbSsl ? 'true' : 'false',
-      });
-      onNotification(res.message);
-      await loadEnvData();
-    } catch (err: any) {
-      onNotification(err.message || 'Failed to update environment variables', true);
-    } finally {
-      setIsSavingEnv(false);
-    }
-  };
-
-  const handleCopyHealthUrl = () => {
-    const origin = typeof window !== 'undefined' ? window.location.origin : '';
-    const healthUrl = `${origin}/health`;
-    navigator.clipboard.writeText(healthUrl);
-    setCopiedHealthUrl(true);
-    onNotification(`Health check URL copied: ${healthUrl}`);
-    setTimeout(() => setCopiedHealthUrl(false), 2500);
-  };
 
   const handleSaveReminderSettings = async () => {
     if (!websiteUrl.trim()) {
@@ -355,6 +247,28 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     }
   };
 
+  const handleSaveChannelOnly = async () => {
+    const trimmed = newsletterJid.trim();
+    if (!trimmed) {
+      onNotification('Please enter a WhatsApp Channel JID ending in @newsletter', true);
+      return;
+    }
+    if (!trimmed.endsWith('@newsletter')) {
+      onNotification('Invalid JID. Channel destination must end with @newsletter', true);
+      return;
+    }
+    setSavingChannel(true);
+    try {
+      const res = await api.saveChannel(trimmed);
+      onNotification(res.message || `WhatsApp Channel saved: ${trimmed}`);
+      onRefreshSettings();
+    } catch (err: any) {
+      onNotification(err.message || 'Failed to save channel', true);
+    } finally {
+      setSavingChannel(false);
+    }
+  };
+
   const handleTestWingoFeed = async () => {
     setTestingWingo(true);
     setWingoTestResult(null);
@@ -401,308 +315,22 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     <div className="space-y-6 max-w-3xl mx-auto">
       {/* Header */}
       <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-xl">
-        <h2 className="text-lg font-bold text-white tracking-tight flex items-center gap-2">
-          <Sliders className="w-5 h-5 text-emerald-400" />
-          <span>System & Channel Configuration</span>
-        </h2>
-        <p className="text-xs text-neutral-400 mt-0.5">
-          Configuration is persisted directly in PostgreSQL and applied immediately to the active bot runner
-        </p>
-      </div>
-
-      {/* Database Connection & Environment Variables Manager */}
-      <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-xl space-y-5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
-            <Database className="w-5 h-5 text-emerald-400" />
-            <div>
-              <h3 className="text-sm font-bold text-white tracking-tight">Database & Environment Variables Manager</h3>
-              <p className="text-xs text-neutral-400">Configure PostgreSQL Database URL and server settings directly from this web dashboard</p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={() => {
-              loadHealthData();
-              loadEnvData();
-            }}
-            disabled={healthLoading}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-neutral-950 hover:bg-neutral-800 text-neutral-300 border border-neutral-800 rounded-xl text-xs font-semibold transition-colors disabled:opacity-50"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${healthLoading ? 'animate-spin' : ''}`} />
-            <span>Refresh Status</span>
-          </button>
-        </div>
-
-        {/* Current Database Engine Status Card */}
-        <div className="p-4 rounded-xl bg-neutral-950 border border-neutral-800 space-y-2">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-xs font-semibold text-neutral-400 flex items-center gap-1.5">
-              <Server className="w-3.5 h-3.5 text-neutral-400" />
-              <span>Active Database Engine:</span>
-            </span>
-            {systemHealth?.database?.isRealPostgres || envInfo?.database?.isRealPostgres ? (
-              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[11px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                <span>PostgreSQL (Active & Connected)</span>
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[11px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30">
-                <AlertCircle className="w-3.5 h-3.5" />
-                <span>In-Memory Fallback (No Postgres Linked)</span>
-              </span>
-            )}
-          </div>
-          {envInfo?.database?.maskedUrl && (
-            <div className="text-[11px] text-neutral-300 font-mono bg-neutral-900/80 px-2.5 py-1.5 rounded-lg border border-neutral-800/80 break-all flex items-center gap-2">
-              <span className="text-neutral-500 select-none">URL:</span>
-              <span className="text-emerald-400">{envInfo.database.maskedUrl}</span>
-            </div>
-          )}
-          <p className="text-[11px] text-neutral-400 leading-relaxed">
-            {systemHealth?.database?.isRealPostgres || envInfo?.database?.isRealPostgres
-              ? 'Persistent storage active. WhatsApp credentials, sessions, and templates survive all server restarts.'
-              : 'Running in preview in-memory mode. Connect a real PostgreSQL database below (Oracle localhost, Supabase, Railway, or Render) to persist sessions 24/7.'}
-          </p>
-        </div>
-
-        {/* Live Database URL Connection Form */}
-        <form onSubmit={handleConnectDatabase} className="space-y-3.5 p-4 rounded-xl bg-neutral-950/70 border border-neutral-800">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <label className="text-xs font-bold text-white flex items-center gap-1.5">
-              <Key className="w-3.5 h-3.5 text-teal-400" />
-              <span>Connect / Update PostgreSQL DATABASE_URL</span>
-            </label>
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="text-[10px] text-neutral-400">Quick Templates:</span>
-              <button
-                type="button"
-                onClick={() => {
-                  setDbUrlInput('postgresql://wingo_user:password@localhost:5432/wingo_bot');
-                  setDbSsl(false);
-                }}
-                className="text-[10px] px-2 py-0.5 rounded bg-neutral-900 hover:bg-neutral-800 text-neutral-300 border border-neutral-700 font-mono"
-              >
-                Oracle Localhost
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setDbUrlInput('postgresql://postgres.your-id:your-password@aws-0-ap-south-1.pooler.supabase.com:6543/postgres');
-                  setDbSsl(true);
-                }}
-                className="text-[10px] px-2 py-0.5 rounded bg-neutral-900 hover:bg-neutral-800 text-teal-300 border border-neutral-700 font-mono"
-              >
-                Supabase
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setDbUrlInput('postgresql://postgres:your-password@postgres.railway.internal:5432/railway');
-                  setDbSsl(true);
-                }}
-                className="text-[10px] px-2 py-0.5 rounded bg-neutral-900 hover:bg-neutral-800 text-purple-300 border border-neutral-700 font-mono"
-              >
-                Railway
-              </button>
-            </div>
-          </div>
-
-          <div className="relative">
-            <input
-              type={showDbPassword ? 'text' : 'password'}
-              value={dbUrlInput}
-              onChange={(e) => setDbUrlInput(e.target.value)}
-              placeholder="postgresql://username:password@host:5432/database_name"
-              className="w-full bg-neutral-900 border border-neutral-700 rounded-xl px-3.5 py-2.5 pr-10 text-xs text-white placeholder-neutral-500 font-mono focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
-            />
-            <button
-              type="button"
-              onClick={() => setShowDbPassword(!showDbPassword)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-white"
-            >
-              {showDbPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-            </button>
-          </div>
-
-          <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-            <label className="flex items-center gap-2 cursor-pointer select-none text-xs text-neutral-300">
-              <input
-                type="checkbox"
-                checked={dbSsl}
-                onChange={(e) => setDbSsl(e.target.checked)}
-                className="rounded border-neutral-700 bg-neutral-900 text-emerald-500 focus:ring-emerald-500"
-              />
-              <span>Enable SSL mode (Check for Supabase/Neon/Railway/Render, uncheck for local Oracle VPS)</span>
-            </label>
-
-            <button
-              type="submit"
-              disabled={isConnectingDb || !dbUrlInput.trim()}
-              className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-emerald-950 active:scale-95"
-            >
-              {isConnectingDb ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-              <span>{isConnectingDb ? 'Testing Connection...' : 'Test & Connect Database'}</span>
-            </button>
-          </div>
-
-          {dbResultMsg && (
-            <div
-              className={`p-3 rounded-xl text-xs flex items-start gap-2 ${
-                dbResultMsg.type === 'success'
-                  ? 'bg-emerald-950/60 border border-emerald-800 text-emerald-300'
-                  : 'bg-rose-950/60 border border-rose-800 text-rose-300'
-              }`}
-            >
-              {dbResultMsg.type === 'success' ? (
-                <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400 mt-0.5" />
-              ) : (
-                <AlertCircle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
-              )}
-              <span className="leading-relaxed">{dbResultMsg.message}</span>
-            </div>
-          )}
-        </form>
-
-        {/* Collapsible Additional Server Environment Variables (.env) */}
-        <div className="pt-1">
-          <button
-            type="button"
-            onClick={() => setShowEnvManager(!showEnvManager)}
-            className="inline-flex items-center gap-1.5 text-xs font-semibold text-neutral-300 hover:text-white transition-colors"
-          >
-            <Terminal className="w-3.5 h-3.5 text-neutral-400" />
-            <span>{showEnvManager ? 'Hide Server Environment Variables' : '⚙️ Manage Server Environment Variables (.env)'}</span>
-            {showEnvManager ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-          </button>
-
-          {showEnvManager && (
-            <div className="mt-3 p-4 bg-neutral-950 rounded-xl border border-neutral-800 space-y-4 text-xs">
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div className="space-y-1">
-                  <label className="text-neutral-400 font-semibold text-[11px]">ADMIN_USERNAME</label>
-                  <input
-                    type="text"
-                    value={adminUsernameInput}
-                    onChange={(e) => setAdminUsernameInput(e.target.value)}
-                    className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-1.5 text-white font-mono focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-neutral-400 font-semibold text-[11px]">PORT</label>
-                  <input
-                    type="text"
-                    value={serverPortInput}
-                    onChange={(e) => setServerPortInput(e.target.value)}
-                    className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-1.5 text-white font-mono focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-neutral-400 font-semibold text-[11px]">NODE_ENV</label>
-                  <select
-                    value={nodeEnvInput}
-                    onChange={(e) => setNodeEnvInput(e.target.value)}
-                    className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-1.5 text-white font-mono focus:outline-none focus:border-emerald-500"
-                  >
-                    <option value="production">production</option>
-                    <option value="development">development</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="flex justify-end pt-1">
-                <button
-                  type="button"
-                  onClick={handleSaveEnv}
-                  disabled={isSavingEnv}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg text-xs font-semibold transition-colors disabled:opacity-50"
-                >
-                  {isSavingEnv ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-                  <span>Save to .env</span>
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* 24/7 Keep-Alive & Health Monitor */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-          <div className="p-3.5 rounded-xl bg-neutral-950 border border-neutral-800 space-y-1.5">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-neutral-400 flex items-center gap-1.5">
-                <Globe className="w-3.5 h-3.5 text-neutral-400" />
-                <span>24/7 Keep-Alive Uptime</span>
-              </span>
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-teal-500/10 text-teal-400 border border-teal-500/30">
-                <Zap className="w-3 h-3" />
-                <span>Active (/health)</span>
-              </span>
-            </div>
-            <p className="text-[11px] text-neutral-400 leading-relaxed">
-              Uptime: <strong className="text-white font-mono">{systemHealth?.uptimeSeconds ? `${Math.floor(systemHealth.uptimeSeconds / 60)}m ${systemHealth.uptimeSeconds % 60}s` : 'Active'}</strong>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-bold text-white tracking-tight flex items-center gap-2">
+              <Sliders className="w-5 h-5 text-emerald-400" />
+              <span>System & Channel Configuration</span>
+            </h2>
+            <p className="text-xs text-neutral-400 mt-1">
+              Configuration is persisted in Oracle Native Local Storage and applied live to active signals.
             </p>
           </div>
-
-          <div className="p-3.5 bg-neutral-950 rounded-xl border border-neutral-800 flex items-center justify-between gap-2">
-            <div className="space-y-0.5">
-              <span className="text-xs font-semibold text-white block">Health Monitor URL</span>
-              <p className="text-[11px] text-neutral-400">Ping in UptimeRobot if hosted on Render</p>
-            </div>
-            <button
-              type="button"
-              onClick={handleCopyHealthUrl}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-neutral-900 hover:bg-neutral-800 text-neutral-200 border border-neutral-700 rounded-lg text-xs font-semibold transition-all active:scale-95 shrink-0"
-            >
-              {copiedHealthUrl ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-              <span>{copiedHealthUrl ? 'Copied!' : 'Copy URL'}</span>
-            </button>
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+              <Server className="w-3.5 h-3.5" />
+              <span>Oracle Local Storage: Active</span>
+            </span>
           </div>
-        </div>
-
-        {/* Deploy Guide Toggle */}
-        <div className="pt-1">
-          <button
-            type="button"
-            onClick={() => setShowDeployGuide(!showDeployGuide)}
-            className="inline-flex items-center gap-1.5 text-xs font-semibold text-teal-400 hover:text-teal-300 transition-colors"
-          >
-            <span>{showDeployGuide ? 'Hide Cloud Deployment Guides' : '📖 View Step-by-Step Cloud Deployment Guides (Oracle, Railway, Render)'}</span>
-            {showDeployGuide ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-          </button>
-
-          {showDeployGuide && (
-            <div className="mt-3 p-4 bg-neutral-950 rounded-xl border border-neutral-800 text-xs text-neutral-300 space-y-3 leading-relaxed">
-              <div className="space-y-1">
-                <p className="font-bold text-white flex items-center gap-1.5">
-                  <span className="w-4 h-4 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] flex items-center justify-center font-bold">1</span>
-                  <span>Oracle Cloud Always Free (Recommended - Never Sleeps):</span>
-                </p>
-                <p className="text-neutral-400 text-[11px] pl-5">
-                  Clone your repo on your Oracle Ubuntu VPS, run <code className="text-emerald-400 font-mono">chmod +x setup-oracle.sh && ./setup-oracle.sh</code>. It installs PostgreSQL locally and runs 24/7 on PM2! You can also connect it using the form above.
-                </p>
-              </div>
-
-              <div className="space-y-1">
-                <p className="font-bold text-white flex items-center gap-1.5">
-                  <span className="w-4 h-4 rounded-full bg-purple-500/20 text-purple-400 text-[10px] flex items-center justify-center font-bold">2</span>
-                  <span>Railway (1-Click Deploy):</span>
-                </p>
-                <p className="text-neutral-400 text-[11px] pl-5">
-                  Connect your GitHub repo on <a href="https://railway.app" target="_blank" rel="noreferrer" className="text-purple-400 underline">Railway.app</a>, click <strong>+ Create → Database → Add PostgreSQL</strong>. Railway will link your DATABASE_URL automatically.
-                </p>
-              </div>
-
-              <div className="space-y-1">
-                <p className="font-bold text-white flex items-center gap-1.5">
-                  <span className="w-4 h-4 rounded-full bg-teal-500/20 text-teal-400 text-[10px] flex items-center justify-center font-bold">3</span>
-                  <span>Render (Free Tier):</span>
-                </p>
-                <p className="text-neutral-400 text-[11px] pl-5">
-                  Deploy Web Service on Render and link with free Render PostgreSQL or Supabase URI using the <code className="text-teal-300 font-mono">render.yaml</code> Blueprint.
-                </p>
-              </div>
-            </div>
-          )}
         </div>
       </div>
 
@@ -723,7 +351,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
               <label className="block text-xs font-semibold uppercase tracking-wider text-neutral-400 mb-1.5">
                 Channel JID (@newsletter)
               </label>
-              <div className="flex gap-2">
+              <div className="flex flex-col sm:flex-row gap-2">
                 <input
                   id="settings-newsletter-jid-input"
                   type="text"
@@ -732,6 +360,16 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                   placeholder="120363411395110604@newsletter"
                   className="flex-1 px-4 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-white font-mono text-sm focus:outline-hidden focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors"
                 />
+                <button
+                  id="save-newsletter-channel-direct-btn"
+                  type="button"
+                  onClick={handleSaveChannelOnly}
+                  disabled={savingChannel || !newsletterJid.trim()}
+                  className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-sm font-semibold flex items-center justify-center gap-2 transition-all shadow-md active:scale-95 disabled:opacity-50 shrink-0"
+                >
+                  {savingChannel ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                  <span>Save Channel</span>
+                </button>
               </div>
             </div>
 

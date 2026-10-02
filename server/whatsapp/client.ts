@@ -7,7 +7,7 @@ import {
   type ConnectionState as BaileysConnectionState,
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
-import { usePostgresAuthState, hasStoredAuth } from '../db/auth-store.js';
+import { usePostgresAuthState, hasStoredAuth, getStoredUserPhone } from '../db/auth-store.js';
 import { query } from '../db/index.js';
 import { logger, LogEvent, logLifecycle } from '../services/logger.js';
 import { getActiveWhatsAppDestination, validateNewsletterJid } from '../services/destination.js';
@@ -141,13 +141,14 @@ export class WhatsAppManager {
     try {
       const hasAuth = await hasStoredAuth();
       if (hasAuth) {
-        logger.info('Found existing WhatsApp credentials in PostgreSQL. Restoring connection...');
+        logger.info('Found existing WhatsApp credentials. Restoring connection...');
+        this.phoneNumber = getStoredUserPhone() || this.phoneNumber;
         this.status = 'connecting';
         this.getOrInitSocket().catch((err) => {
           logger.error({ err: err.message }, 'Failed to restore WhatsApp connection on startup');
         });
       } else {
-        logger.info('No WhatsApp credentials stored in PostgreSQL. WhatsApp status: NOT_PAIRED.');
+        logger.info('No WhatsApp credentials stored. WhatsApp status: NOT_PAIRED.');
         this.status = 'not_paired';
         this.sock = null;
         this.pairingCode = null;

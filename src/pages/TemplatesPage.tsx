@@ -258,7 +258,7 @@ export const TemplatesPage: React.FC<TemplatesPageProps> = ({
     return (
       <div className="flex flex-col items-center justify-center p-16 space-y-4">
         <Loader2 className="w-8 h-8 text-emerald-500 animate-spin" />
-        <p className="text-neutral-400 text-sm">Loading message templates from PostgreSQL...</p>
+        <p className="text-neutral-400 text-sm">Loading message templates...</p>
       </div>
     );
   }
@@ -273,7 +273,7 @@ export const TemplatesPage: React.FC<TemplatesPageProps> = ({
             WhatsApp Message Templates
           </h2>
           <p className="text-xs text-neutral-400 mt-1">
-            Customize exact WhatsApp messages broadcasted to your subscribers. Stored in PostgreSQL and applied live without restarting.
+            Customize exact WhatsApp messages broadcasted to your subscribers. Stored safely and applied live without restarting.
           </p>
         </div>
 

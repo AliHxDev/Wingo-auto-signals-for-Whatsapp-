@@ -180,7 +180,7 @@ export const SessionsPage: React.FC<SessionsPageProps> = ({
 
   /**
    * Primary Button: START SESSIONS / STOP SESSIONS
-   * Enables the automatic session schedule in PostgreSQL and activates the background scheduler.
+   * Enables the automatic session schedule and activates the background scheduler.
    */
   const handleStartSchedule = async () => {
     if (!currentUser) {
@@ -1222,7 +1222,7 @@ export const SessionsPage: React.FC<SessionsPageProps> = ({
             </div>
 
             <p className="text-xs text-neutral-400 bg-neutral-950/60 p-3 rounded-xl border border-neutral-800">
-              This action will remove the scheduled session from PostgreSQL. Historical execution logs and statistics will be preserved safely.
+              This action will remove the scheduled session configuration. Historical execution logs and statistics will be preserved safely.
             </p>
 
             <div className="flex items-center justify-end gap-3 pt-2">

@@ -200,7 +200,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               </span>
               <span className="text-xs text-neutral-500">•</span>
               <span className="text-xs text-neutral-400 font-mono">
-                Authoritative State in PostgreSQL
+                Persistent System State
               </span>
             </div>
 
@@ -538,7 +538,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                 <span className="text-amber-400">Prediction Engine: PAUSED</span>
               </div>
               <p className="text-xs text-rose-300/80 mt-0.5">
-                Session "{schedulerStatus?.activeSession?.session_name}" target ({schedulerStatus?.activeSession?.wins}/{schedulerStatus?.activeSession?.target_wins} WINs) is preserved in PostgreSQL. Signals will resume automatically upon WhatsApp reconnection.
+                Session "{schedulerStatus?.activeSession?.session_name}" target ({schedulerStatus?.activeSession?.wins}/{schedulerStatus?.activeSession?.target_wins} WINs) is preserved safely. Signals will resume automatically upon WhatsApp reconnection.
               </p>
             </div>
           </div>

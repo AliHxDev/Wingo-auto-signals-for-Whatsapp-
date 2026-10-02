@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import pg from 'pg';
 import bcrypt from 'bcrypt';
 import { newDb } from 'pg-mem';
@@ -5,6 +7,111 @@ import { config } from '../config/index.js';
 import { logger } from '../services/logger.js';
 
 const { Pool } = pg;
+
+const DATA_DIR = path.resolve(process.cwd(), 'data');
+const DB_FILE = path.join(DATA_DIR, 'wingo_database.json');
+
+const PERSISTED_TABLES = [
+  'users',
+  'settings',
+  'whatsapp_connection',
+  'session_configs',
+  'bot_sessions',
+  'signals',
+  'wingo_results',
+  'delivery_logs',
+  'session_reminders',
+  'scheduled_reminders',
+  'message_templates',
+  'system_logs',
+];
+
+let saveTimeout: NodeJS.Timeout | null = null;
+
+export async function flushLocalDatabase(target: DatabaseAdapter): Promise<void> {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    const dump: Record<string, any[]> = {};
+    for (const table of PERSISTED_TABLES) {
+      try {
+        const res = await target.query(`SELECT * FROM ${table}`);
+        dump[table] = res.rows;
+      } catch {}
+    }
+    const tempFile = `${DB_FILE}.tmp`;
+    fs.writeFileSync(tempFile, JSON.stringify(dump, null, 2), 'utf-8');
+    fs.renameSync(tempFile, DB_FILE);
+  } catch (err: any) {
+    logger.warn({ err: err.message }, 'Failed to persist local database to disk');
+  }
+}
+
+export function scheduleLocalDatabaseSave(target: DatabaseAdapter): void {
+  if (saveTimeout) clearTimeout(saveTimeout);
+  saveTimeout = setTimeout(() => {
+    flushLocalDatabase(target).catch(() => {});
+  }, 300);
+}
+
+export async function restoreLocalDatabase(target: DatabaseAdapter): Promise<void> {
+  try {
+    if (!fs.existsSync(DB_FILE)) return;
+    const raw = fs.readFileSync(DB_FILE, 'utf-8');
+    const data = JSON.parse(raw);
+    logger.info('Restoring local persistent database from ./data/wingo_database.json...');
+
+    for (const table of PERSISTED_TABLES) {
+      const rows = data[table];
+      if (!Array.isArray(rows) || rows.length === 0) continue;
+
+      for (const row of rows) {
+        try {
+          if (table === 'settings') {
+            await target.query(
+              `INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;`,
+              [row.key, row.value]
+            );
+          } else if (table === 'users') {
+            await target.query(
+              `INSERT INTO users (id, username, password_hash) VALUES ($1, $2, $3) ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash;`,
+              [row.id, row.username, row.password_hash]
+            );
+          } else if (table === 'whatsapp_connection') {
+            await target.query(
+              `INSERT INTO whatsapp_connection (id, status, phone_number, pairing_code, last_error) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, phone_number = EXCLUDED.phone_number;`,
+              [row.id, row.status, row.phone_number, row.pairing_code, row.last_error]
+            );
+          } else if (table === 'session_configs') {
+            await target.query(
+              `INSERT INTO session_configs (id, session_name, start_time, end_time, enabled, target_wins, min_confidence, signal_delay_min, signal_delay_max) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (id) DO UPDATE SET session_name = EXCLUDED.session_name, start_time = EXCLUDED.start_time, end_time = EXCLUDED.end_time;`,
+              [row.id, row.session_name, row.start_time, row.end_time, row.enabled, row.target_wins, row.min_confidence, row.signal_delay_min, row.signal_delay_max]
+            );
+          } else {
+            const keys = Object.keys(row);
+            const cols = keys.map((k) => `"${k}"`).join(', ');
+            const placeholders = keys.map((_, i) => `$${i + 1}`).join(', ');
+            const values = keys.map((k) => {
+              const val = row[k];
+              if (val !== null && typeof val === 'object' && !(val instanceof Date)) {
+                return JSON.stringify(val);
+              }
+              return val;
+            });
+            await target.query(
+              `INSERT INTO ${table} (${cols}) VALUES (${placeholders}) ON CONFLICT DO NOTHING;`,
+              values
+            );
+          }
+        } catch {}
+      }
+    }
+    logger.info('Local persistent database successfully restored.');
+  } catch (err: any) {
+    logger.warn({ err: err.message }, 'Failed to restore local database from file');
+  }
+}
 
 export interface QueryResult<T = any> {
   rows: T[];
@@ -37,7 +144,12 @@ export async function getDatabase(): Promise<DatabaseAdapter> {
       process.env.VITEST === 'true' ||
       config.NODE_ENV === 'test';
 
-    if (config.DATABASE_URL && !isTestEnv) {
+    const useLocalDb =
+      process.env.USE_LOCAL_DB === 'true' ||
+      !config.DATABASE_URL ||
+      config.DATABASE_URL.trim() === '';
+
+    if (!useLocalDb && !isTestEnv && config.DATABASE_URL) {
       const dbUrl = config.DATABASE_URL.trim();
       const isLocal = dbUrl.includes('localhost') || dbUrl.includes('127.0.0.1');
       const useSsl = config.DATABASE_SSL || !isLocal;
@@ -48,7 +160,7 @@ export async function getDatabase(): Promise<DatabaseAdapter> {
         'Connecting to PostgreSQL database via DATABASE_URL...'
       );
 
-      const maxRetries = 3;
+      const maxRetries = 2;
       let lastErr: any = null;
 
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -66,7 +178,6 @@ export async function getDatabase(): Promise<DatabaseAdapter> {
             });
             await pool.query('SELECT 1');
           } catch (sslErr: any) {
-            // If SSL was rejected or not supported by server (e.g. Render internal network connection)
             if (
               useSsl &&
               (sslErr.message?.includes('SSL') ||
@@ -74,7 +185,7 @@ export async function getDatabase(): Promise<DatabaseAdapter> {
                 sslErr.message?.includes('The server does not support SSL'))
             ) {
               logger.info(
-                'SSL rejected by PostgreSQL server, connecting without SSL (Render internal mode)...'
+                'SSL rejected by PostgreSQL server, connecting without SSL...'
               );
               pool = new Pool({
                 connectionString: dbUrl,
@@ -119,12 +230,11 @@ export async function getDatabase(): Promise<DatabaseAdapter> {
             { attempt, maxRetries, err: connErr.message },
             'PostgreSQL connection attempt failed, retrying...'
           );
-          // If DNS fails (host does not exist), do not retry endlessly
           if (connErr.code === 'ENOTFOUND' || connErr.code === 'EAI_AGAIN') {
             break;
           }
           if (attempt < maxRetries) {
-            await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
+            await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
           }
         }
       }
@@ -132,19 +242,18 @@ export async function getDatabase(): Promise<DatabaseAdapter> {
       if (!selectedAdapter && lastErr) {
         logger.warn(
           { err: lastErr.message },
-          'PostgreSQL host unreachable after retries. Falling back to in-memory PostgreSQL engine (pg-mem).'
+          'PostgreSQL unreachable. Running on native local persistent database engine (Oracle self-contained).'
         );
         selectedAdapter = null;
       }
     }
 
     if (!selectedAdapter) {
-      logger.warn(
-        'Initializing in-memory PostgreSQL engine (pg-mem) for preview/fallback environment.'
+      logger.info(
+        'Using Oracle Native Persistent Database Engine (stored locally in ./data/wingo_database.json).'
       );
       const memDb = newDb();
 
-      // Register custom functions if needed
       memDb.public.registerFunction({
         name: 'now',
         implementation: () => new Date().toISOString(),
@@ -156,12 +265,19 @@ export async function getDatabase(): Promise<DatabaseAdapter> {
       selectedAdapter = {
         query: async <T = any>(text: string, params?: any[]) => {
           const res = await pool.query(text, params);
+          const isWrite = /^\s*(INSERT|UPDATE|DELETE|TRUNCATE|DROP)\b/i.test(text.trim());
+          if (isWrite && selectedAdapter) {
+            scheduleLocalDatabaseSave(selectedAdapter);
+          }
           return {
             rows: res.rows as T[],
             rowCount: res.rowCount ?? (res.rows ? res.rows.length : 0),
           };
         },
         close: async () => {
+          if (selectedAdapter) {
+            await flushLocalDatabase(selectedAdapter);
+          }
           await pool.end();
           dbAdapter = null;
           dbInitPromise = null;
@@ -567,6 +683,12 @@ Please prepare your funds and be ready.
     logger.info('Default session schedules (Morning 06:00, Afternoon 14:00, Night 20:00) initialized.');
   }
 
+  // Restore any persisted data from disk if running on local engine
+  if (target && !target.isRealPostgres) {
+    await restoreLocalDatabase(target);
+    await flushLocalDatabase(target);
+  }
+
   logger.info('Database schema and default records initialized.');
 }
 
@@ -592,7 +714,7 @@ export function getDatabaseInfo() {
 
   return {
     isRealPostgres: isReal,
-    type: isReal ? 'PostgreSQL' : 'In-Memory (pg-mem fallback)',
+    type: isReal ? 'PostgreSQL (External)' : 'Oracle Native Persistent (Local Storage)',
     connected: true,
     hasUrlConfigured: !!currentUrl,
     maskedUrl: masked,

@@ -235,6 +235,13 @@ class ApiService {
     });
   }
 
+  async saveChannel(newsletterJid: string): Promise<{ success: boolean; activeDestination: string; message: string }> {
+    return this.request('/api/settings/channel', {
+      method: 'POST',
+      body: JSON.stringify({ newsletterJid }),
+    });
+  }
+
   async resolveChannelLink(link: string): Promise<{ success: boolean; jid: string; name?: string }> {
     return this.request('/api/settings/resolve-channel', {
       method: 'POST',

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Smartphone,
   KeyRound,
@@ -13,6 +13,8 @@ import {
   ShieldAlert,
   QrCode,
   Trash2,
+  MessageSquare,
+  Save,
 } from 'lucide-react';
 import { api } from '../services/api.js';
 import type { WhatsAppStatus, User } from '../types/index.js';
@@ -37,6 +39,8 @@ export const WhatsAppPage: React.FC<WhatsAppPageProps> = ({
   onNotification,
 }) => {
   const [phoneNumber, setPhoneNumber] = useState('');
+  const [channelJidInput, setChannelJidInput] = useState(activeDestination || '');
+  const [savingChannel, setSavingChannel] = useState(false);
   const [linkMode, setLinkMode] = useState<'qr' | 'code'>('qr');
   const [pairingLoading, setPairingLoading] = useState(false);
   const [reconnectLoading, setReconnectLoading] = useState(false);
@@ -44,6 +48,12 @@ export const WhatsAppPage: React.FC<WhatsAppPageProps> = ({
   const [testLoading, setTestLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [autoLoggingIn, setAutoLoggingIn] = useState(false);
+
+  useEffect(() => {
+    if (activeDestination) {
+      setChannelJidInput(activeDestination);
+    }
+  }, [activeDestination]);
 
   const isConnected = whatsAppStatus?.status === 'connected';
   const isPairing = whatsAppStatus?.status === 'pairing';
@@ -147,6 +157,28 @@ export const WhatsAppPage: React.FC<WhatsAppPageProps> = ({
       onNotification(err.message || 'Test message failed', true);
     } finally {
       setTestLoading(false);
+    }
+  };
+
+  const handleSaveChannel = async () => {
+    const trimmed = channelJidInput.trim();
+    if (!trimmed) {
+      onNotification('Please enter a WhatsApp Channel JID ending in @newsletter', true);
+      return;
+    }
+    if (!trimmed.endsWith('@newsletter')) {
+      onNotification('Invalid JID. WhatsApp Channel destination must end with @newsletter', true);
+      return;
+    }
+    setSavingChannel(true);
+    try {
+      const res = await api.saveChannel(trimmed);
+      onNotification(res.message || `Channel destination saved: ${trimmed}`);
+      onRefreshStatus();
+    } catch (err: any) {
+      onNotification(err.message || 'Failed to save channel destination', true);
+    } finally {
+      setSavingChannel(false);
     }
   };
 
@@ -469,12 +501,61 @@ export const WhatsAppPage: React.FC<WhatsAppPageProps> = ({
             <div>
               <h3 className="text-sm font-bold text-white">WhatsApp Session is Active</h3>
               <p className="text-xs text-neutral-400">
-                Credentials are secure and persisted in PostgreSQL. The bot is ready to broadcast signals.
+                Credentials are secure and persisted in local storage. The bot is ready to broadcast signals.
               </p>
             </div>
           </div>
         </div>
       )}
+
+      {/* Target WhatsApp Channel Configuration Card */}
+      <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-xl space-y-4">
+        <div>
+          <h3 className="text-base font-bold text-white flex items-center gap-2">
+            <MessageSquare className="w-4 h-4 text-emerald-400" />
+            <span>Target WhatsApp Channel Destination</span>
+          </h3>
+          <p className="text-xs text-neutral-400 mt-1">
+            Configure the WhatsApp Newsletter Channel where all signals, WIN alerts, and session summaries are broadcasted.
+          </p>
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-2">
+          <input
+            id="wa-page-newsletter-input"
+            type="text"
+            value={channelJidInput}
+            onChange={(e) => setChannelJidInput(e.target.value)}
+            placeholder="120363411395110604@newsletter"
+            className="flex-1 px-4 py-2.5 bg-neutral-950 border border-neutral-800 rounded-xl text-white font-mono text-sm focus:outline-hidden focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors"
+          />
+          <button
+            id="wa-page-save-channel-btn"
+            type="button"
+            onClick={handleSaveChannel}
+            disabled={savingChannel || !channelJidInput.trim()}
+            className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-sm font-semibold flex items-center justify-center gap-2 transition-all shadow-md active:scale-95 disabled:opacity-50 shrink-0"
+          >
+            {savingChannel ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+            <span>Save Channel</span>
+          </button>
+        </div>
+
+        {activeDestination ? (
+          <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-400 text-xs flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span>Active Target: <strong className="font-mono">{activeDestination}</strong></span>
+            </div>
+            <span className="text-[11px] bg-emerald-500/20 px-2 py-0.5 rounded-md font-semibold">Ready to Broadcast</span>
+          </div>
+        ) : (
+          <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-amber-400 text-xs flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            <span>Enter your Channel ID ending in <code className="font-mono text-amber-300">@newsletter</code> and click <strong>Save Channel</strong>.</span>
+          </div>
+        )}
+      </div>
 
       {/* Test Message Section */}
       <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-xl">

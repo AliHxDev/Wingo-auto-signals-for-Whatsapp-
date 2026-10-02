@@ -45,7 +45,7 @@ export const StatisticsPage: React.FC<StatisticsPageProps> = ({ statistics }) =>
           <span>Performance & Analytics</span>
         </h2>
         <p className="text-xs text-neutral-400 mt-0.5">
-          Real-time aggregated metrics computed directly from PostgreSQL signal records
+          Real-time aggregated metrics computed directly from persistent signal records
         </p>
       </div>
 

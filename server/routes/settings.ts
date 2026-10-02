@@ -322,7 +322,40 @@ settingsRouter.post('/database-connection', requireAuth, async (req: Request, re
   }
 });
 
-// POST to update environment variables into .env and runtime
+// POST to explicitly save WhatsApp Channel destination
+settingsRouter.post('/channel', requireAuth, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { newsletterJid } = req.body;
+    if (newsletterJid === undefined) {
+      res.status(400).json({ error: 'newsletterJid parameter is required.' });
+      return;
+    }
+
+    const trimmed = String(newsletterJid).trim();
+    if (trimmed.length > 0) {
+      const val = validateNewsletterJid(trimmed);
+      if (!val.valid || !val.normalizedJid) {
+        res.status(400).json({ error: val.error || 'Invalid Newsletter JID.' });
+        return;
+      }
+      await setActiveWhatsAppDestination(val.normalizedJid);
+      res.json({
+        success: true,
+        activeDestination: val.normalizedJid,
+        message: `WhatsApp Channel destination successfully saved: ${val.normalizedJid}`,
+      });
+    } else {
+      await setActiveWhatsAppDestination('');
+      res.json({
+        success: true,
+        activeDestination: null,
+        message: 'WhatsApp Channel destination cleared.',
+      });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to save channel destination' });
+  }
+});
 settingsRouter.post('/environment', requireAuth, async (req: Request, res: Response): Promise<void> => {
   try {
     const updates: Record<string, string> = req.body?.updates || {};

@@ -20,12 +20,12 @@ export async function hasStoredAuth(): Promise<boolean> {
     if (fs.existsSync(credsPath)) {
       const raw = fs.readFileSync(credsPath, 'utf-8');
       const parsed = JSON.parse(raw, BufferJSON.reviver);
-      if (parsed?.me?.id || parsed?.registered === true) {
+      if (parsed?.me?.id || parsed?.registered === true || parsed?.account) {
         return true;
       }
     }
 
-    // Fallback: check PostgreSQL
+    // Fallback: check PostgreSQL/local DB
     const credsRes = await query<{ data: any }>(
       'SELECT data FROM whatsapp_auth WHERE id = $1',
       ['creds']
@@ -41,11 +41,28 @@ export async function hasStoredAuth(): Promise<boolean> {
         ? JSON.parse(raw, BufferJSON.reviver)
         : JSON.parse(JSON.stringify(raw), BufferJSON.reviver);
 
-    return !!(parsed?.me?.id || parsed?.registered === true);
+    return !!(parsed?.me?.id || parsed?.registered === true || parsed?.account);
   } catch (err: any) {
     logger.warn({ err: err.message }, 'Failed to check stored WhatsApp auth');
     return false;
   }
+}
+
+/**
+ * Reads the phone number from stored creds.json (e.g. after QR code scan).
+ */
+export function getStoredUserPhone(): string | null {
+  try {
+    const credsPath = path.join(AUTH_DIR, 'creds.json');
+    if (fs.existsSync(credsPath)) {
+      const raw = fs.readFileSync(credsPath, 'utf-8');
+      const parsed = JSON.parse(raw, BufferJSON.reviver);
+      if (parsed?.me?.id) {
+        return parsed.me.id.split(':')[0].replace(/\D/g, '');
+      }
+    }
+  } catch {}
+  return null;
 }
 
 /**
