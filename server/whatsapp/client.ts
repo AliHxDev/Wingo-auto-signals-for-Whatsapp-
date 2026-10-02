@@ -2,6 +2,7 @@ import {
   makeWASocket,
   DisconnectReason,
   Browsers,
+  fetchLatestBaileysVersion,
   type WASocket,
   type ConnectionState as BaileysConnectionState,
 } from '@whiskeysockets/baileys';
@@ -195,12 +196,23 @@ export class WhatsAppManager {
 
         const baileysLogger = pino({ level: 'silent' });
 
+        let waVersion: [number, number, number] | undefined = undefined;
+        try {
+          const versionInfo = await fetchLatestBaileysVersion();
+          waVersion = versionInfo.version;
+          logger.info({ waVersion }, 'Using latest WhatsApp Web protocol version');
+        } catch {
+          // fallback to default if network fetch fails
+        }
+
         const sock = makeWASocket({
+          version: waVersion,
           auth: state,
           printQRInTerminal: false,
           logger: baileysLogger,
-          browser: Browsers.ubuntu('Chrome'),
+          browser: Browsers.macOS('Desktop'),
           syncFullHistory: false,
+          generateHighQualityLinkPreview: true,
           connectTimeoutMs: 60000,
           defaultQueryTimeoutMs: 60000,
           keepAliveIntervalMs: 25000,
@@ -511,7 +523,16 @@ export class WhatsAppManager {
       throw new Error('A pairing request is already in progress. Please wait.');
     }
 
-    const cleanPhone = rawPhoneNumber.replace(/\D/g, '');
+    let cleanPhone = rawPhoneNumber.replace(/\D/g, '');
+    // Smart phone normalization (especially for Pakistan and regional carriers)
+    if (cleanPhone.startsWith('03') && cleanPhone.length === 11) {
+      cleanPhone = '92' + cleanPhone.slice(1);
+    } else if (cleanPhone.startsWith('920') && cleanPhone.length === 12) {
+      cleanPhone = '92' + cleanPhone.slice(3);
+    } else if (cleanPhone.startsWith('0')) {
+      cleanPhone = cleanPhone.replace(/^0+/, '');
+    }
+
     if (!cleanPhone || cleanPhone.length < 8 || cleanPhone.length > 15) {
       throw new Error('Invalid phone number format. Provide 8 to 15 digits including country code.');
     }
@@ -523,30 +544,37 @@ export class WhatsAppManager {
     this.isPairingInProgress = true;
     logLifecycle(LogEvent.PAIRING_STARTED, { phone: cleanPhone });
 
+    // CRITICAL: If not yet authenticated, wipe stale keys to prevent "Could not link device"
+    if (!this.whatsappAuthenticated()) {
+      if (this.sock) {
+        try {
+          this.sock.ev.removeAllListeners('connection.update');
+          this.sock.ev.removeAllListeners('creds.update');
+          this.sock.end(undefined);
+        } catch {}
+        this.sock = null;
+      }
+      if (this.clearAuthFn) {
+        await this.clearAuthFn();
+      }
+    }
+
     const attemptPairing = async (targetSock: WASocket): Promise<string> => {
       logger.info('Waiting for WhatsApp socket to open before requesting pairing code...');
       await Promise.race([
         targetSock.waitForSocketOpen(),
         new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Connection timed out waiting for WhatsApp servers.')), 15000)
+          setTimeout(() => reject(new Error('Connection timed out waiting for WhatsApp servers.')), 20000)
         ),
       ]);
 
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      // Give WhatsApp 3.5s to establish cryptographic session channels
+      await new Promise((resolve) => setTimeout(resolve, 3500));
       return await targetSock.requestPairingCode(cleanPhone);
     };
 
     try {
-      let sock = this.sock;
-      if (!sock || (sock as any).ws?.isClosed || (sock as any).ws?.isClosing) {
-        if (sock) {
-          try {
-            sock.end(undefined);
-          } catch {}
-          this.sock = null;
-        }
-        sock = await this.getOrInitSocket();
-      }
+      let sock = await this.getOrInitSocket();
 
       if (sock.authState?.creds?.registered) {
         this.isPairingInProgress = false;

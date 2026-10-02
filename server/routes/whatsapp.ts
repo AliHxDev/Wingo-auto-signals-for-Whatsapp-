@@ -56,6 +56,15 @@ whatsAppRouter.post('/logout', requireAuth, async (req: Request, res: Response):
   }
 });
 
+whatsAppRouter.post('/reset', requireAuth, async (req: Request, res: Response): Promise<void> => {
+  try {
+    await whatsAppManager.logout();
+    res.json({ success: true, message: 'WhatsApp session reset completely. You can now pair cleanly.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to reset WhatsApp session' });
+  }
+});
+
 whatsAppRouter.post(
   '/test-message',
   requireAuth,

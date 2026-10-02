@@ -79,7 +79,7 @@ fi
 
 # 7. Install dependencies & Build
 echo "🔨 Installing application dependencies..."
-npm install
+npm install --legacy-peer-deps
 
 echo "⚡ Building production frontend and server bundle..."
 npm run build
