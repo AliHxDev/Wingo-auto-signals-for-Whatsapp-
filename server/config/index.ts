@@ -34,7 +34,12 @@ const envSchema = z.object({
 export const config = envSchema.parse({
   PORT: process.env.PORT,
   NODE_ENV: process.env.NODE_ENV,
-  DATABASE_URL: process.env.DATABASE_URL,
+  DATABASE_URL:
+    process.env.DATABASE_URL ||
+    process.env.DATABASE_PRIVATE_URL ||
+    process.env.DATABASE_PUBLIC_URL ||
+    process.env.POSTGRES_URL ||
+    process.env.POSTGRESQL_URL,
   DATABASE_SSL: process.env.DATABASE_SSL,
   ADMIN_USERNAME: process.env.ADMIN_USERNAME,
   ADMIN_PASSWORD: process.env.ADMIN_PASSWORD,

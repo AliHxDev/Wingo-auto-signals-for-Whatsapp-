@@ -229,3 +229,132 @@ settingsRouter.post('/test-wingo', requireAuth, async (req: Request, res: Respon
     res.status(500).json({ error: err.message || 'Failed to test WinGo data feed' });
   }
 });
+
+// GET current environment variables and database status
+settingsRouter.get('/environment', requireAuth, async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const { getDatabaseInfo } = await import('../db/index.js');
+    const { readEnvFile, maskSensitiveValue } = await import('../services/envService.js');
+
+    const envFromFile = readEnvFile();
+    const dbInfo = getDatabaseInfo();
+
+    const envList = [
+      {
+        key: 'DATABASE_URL',
+        label: 'PostgreSQL Database URL',
+        value: dbInfo.maskedUrl || maskSensitiveValue('DATABASE_URL', envFromFile.DATABASE_URL || process.env.DATABASE_URL || ''),
+        rawConfigured: !!(process.env.DATABASE_URL || envFromFile.DATABASE_URL),
+        description: 'PostgreSQL connection string (Supabase, Neon, Railway, Render, or Oracle localhost).',
+        sensitive: true,
+      },
+      {
+        key: 'DATABASE_SSL',
+        label: 'Database SSL Mode',
+        value: envFromFile.DATABASE_SSL || process.env.DATABASE_SSL || 'true',
+        rawConfigured: true,
+        description: 'Set to "true" for cloud databases (Supabase/Neon), or "false" for local Oracle PostgreSQL.',
+        sensitive: false,
+      },
+      {
+        key: 'ADMIN_USERNAME',
+        label: 'Admin Username',
+        value: process.env.ADMIN_USERNAME || envFromFile.ADMIN_USERNAME || 'admin',
+        rawConfigured: true,
+        description: 'Username for web dashboard login.',
+        sensitive: false,
+      },
+      {
+        key: 'PORT',
+        label: 'Server Port',
+        value: process.env.PORT || envFromFile.PORT || '3000',
+        rawConfigured: true,
+        description: 'HTTP port the server listens on (default 3000).',
+        sensitive: false,
+      },
+      {
+        key: 'NODE_ENV',
+        label: 'Environment Mode',
+        value: process.env.NODE_ENV || 'production',
+        rawConfigured: true,
+        description: 'production or development.',
+        sensitive: false,
+      },
+    ];
+
+    res.json({
+      success: true,
+      database: dbInfo,
+      environment: envList,
+      rawEnv: {
+        DATABASE_URL: dbInfo.maskedUrl,
+        DATABASE_SSL: envFromFile.DATABASE_SSL || process.env.DATABASE_SSL || 'true',
+        ADMIN_USERNAME: process.env.ADMIN_USERNAME || envFromFile.ADMIN_USERNAME || 'admin',
+        PORT: process.env.PORT || envFromFile.PORT || '3000',
+        NODE_ENV: process.env.NODE_ENV || 'production',
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to retrieve environment configuration' });
+  }
+});
+
+// POST to switch or update database connection string directly from UI
+settingsRouter.post('/database-connection', requireAuth, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { databaseUrl, ssl } = req.body;
+    if (!databaseUrl || typeof databaseUrl !== 'string' || databaseUrl.trim().length === 0) {
+      res.status(400).json({ error: 'Please enter a valid PostgreSQL Database URL.' });
+      return;
+    }
+
+    const { switchDatabaseConnection } = await import('../db/index.js');
+    const result = await switchDatabaseConnection(databaseUrl.trim(), ssl !== false);
+
+    if (!result.success) {
+      res.status(400).json({ error: result.message });
+      return;
+    }
+
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to switch database connection' });
+  }
+});
+
+// POST to update environment variables into .env and runtime
+settingsRouter.post('/environment', requireAuth, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const updates: Record<string, string> = req.body?.updates || {};
+    if (!updates || Object.keys(updates).length === 0) {
+      res.status(400).json({ error: 'No variables provided to update.' });
+      return;
+    }
+
+    const allowedKeys = ['DATABASE_SSL', 'ADMIN_USERNAME', 'PORT', 'NODE_ENV'];
+    const filteredUpdates: Record<string, string> = {};
+
+    for (const [k, v] of Object.entries(updates)) {
+      if (allowedKeys.includes(k) && typeof v === 'string') {
+        filteredUpdates[k] = v.trim();
+      }
+    }
+
+    if (Object.keys(filteredUpdates).length === 0) {
+      res.status(400).json({ error: 'No valid environment variables provided.' });
+      return;
+    }
+
+    const { updateEnvVariables } = await import('../services/envService.js');
+    const result = updateEnvVariables(filteredUpdates);
+
+    res.json({
+      success: true,
+      message: `Updated ${result.updated.join(', ')} successfully in .env and runtime!`,
+      updated: result.updated,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to update environment variables' });
+  }
+});
+

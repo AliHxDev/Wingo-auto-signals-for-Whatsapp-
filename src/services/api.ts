@@ -249,6 +249,50 @@ class ApiService {
     });
   }
 
+  // Environment & Runtime Database Management
+  async getEnvironment(): Promise<{
+    success: boolean;
+    database: {
+      isRealPostgres: boolean;
+      type: string;
+      connected: boolean;
+      hasUrlConfigured: boolean;
+      maskedUrl: string;
+    };
+    environment: Array<{
+      key: string;
+      label: string;
+      value: string;
+      rawConfigured: boolean;
+      description: string;
+      sensitive: boolean;
+    }>;
+    rawEnv: Record<string, string>;
+  }> {
+    return this.request('/api/settings/environment');
+  }
+
+  async updateDatabaseConnection(
+    databaseUrl: string,
+    ssl: boolean = true
+  ): Promise<{ success: boolean; message: string; isRealPostgres: boolean }> {
+    return this.request('/api/settings/database-connection', {
+      method: 'POST',
+      body: JSON.stringify({ databaseUrl, ssl }),
+    });
+  }
+
+  async updateEnvironment(updates: Record<string, string>): Promise<{
+    success: boolean;
+    message: string;
+    updated: string[];
+  }> {
+    return this.request('/api/settings/environment', {
+      method: 'POST',
+      body: JSON.stringify({ updates }),
+    });
+  }
+
   // Templates
   async getTemplates(): Promise<{ templates: MessageTemplate[] }> {
     return this.request('/api/templates');

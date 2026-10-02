@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import helmet from 'helmet';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
@@ -27,7 +28,7 @@ import { botModeManager } from './server/services/botModeManager.js';
 
 async function startServer() {
   const app = express();
-  const PORT = config.PORT || 3000;
+  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : (config.PORT || 3000);
 
   // Trust proxy for reverse proxies / Cloud Run load balancers
   app.set('trust proxy', 1);
@@ -96,19 +97,21 @@ async function startServer() {
   }
 
   // Vite development middleware or static production serving
-  if (config.NODE_ENV !== 'production') {
+  const distPath = path.join(process.cwd(), 'dist');
+  const hasBuiltApp = fs.existsSync(path.join(distPath, 'index.html'));
+
+  if (config.NODE_ENV === 'production' || hasBuiltApp) {
+    app.use(express.static(distPath));
+    app.get('*', (_req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  } else {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
   }
 
   // Centralized Error Handler

@@ -569,3 +569,133 @@ Please prepare your funds and be ready.
 
   logger.info('Database schema and default records initialized.');
 }
+
+/**
+ * Get current database status and masked URL for UI display
+ */
+export function getDatabaseInfo() {
+  const currentUrl = process.env.DATABASE_URL || config.DATABASE_URL || '';
+  const isReal = dbAdapter ? dbAdapter.isRealPostgres : false;
+  let masked = '';
+
+  if (currentUrl) {
+    try {
+      const u = new URL(currentUrl);
+      if (u.password) {
+        u.password = '••••••••';
+      }
+      masked = u.toString();
+    } catch {
+      masked = currentUrl.replace(/:(.*?)@/, ':••••••••@');
+    }
+  }
+
+  return {
+    isRealPostgres: isReal,
+    type: isReal ? 'PostgreSQL' : 'In-Memory (pg-mem fallback)',
+    connected: true,
+    hasUrlConfigured: !!currentUrl,
+    maskedUrl: masked,
+  };
+}
+
+/**
+ * Dynamically connect and switch database at runtime from the Admin UI
+ */
+export async function switchDatabaseConnection(
+  newUrl: string,
+  useSsl: boolean = true
+): Promise<{ success: boolean; message: string; isRealPostgres: boolean }> {
+  const trimmed = newUrl.trim();
+  if (!trimmed.startsWith('postgres://') && !trimmed.startsWith('postgresql://')) {
+    return {
+      success: false,
+      message: 'Invalid database URL. Must start with postgres:// or postgresql://',
+      isRealPostgres: dbAdapter?.isRealPostgres || false,
+    };
+  }
+
+  try {
+    logger.info({ useSsl }, 'Testing new PostgreSQL connection from UI...');
+    let testPool: any;
+    try {
+      testPool = new Pool({
+        connectionString: trimmed,
+        ssl: useSsl ? { rejectUnauthorized: false } : undefined,
+        max: 5,
+        connectionTimeoutMillis: 8000,
+      });
+      await testPool.query('SELECT 1');
+    } catch (sslErr: any) {
+      if (
+        useSsl &&
+        (sslErr.message?.includes('SSL') ||
+          sslErr.message?.includes('ssl') ||
+          sslErr.message?.includes('The server does not support SSL'))
+      ) {
+        logger.info('SSL rejected by server, retrying without SSL...');
+        testPool = new Pool({
+          connectionString: trimmed,
+          ssl: undefined,
+          max: 5,
+          connectionTimeoutMillis: 8000,
+        });
+        await testPool.query('SELECT 1');
+      } else {
+        throw sslErr;
+      }
+    }
+
+    const newAdapter: DatabaseAdapter = {
+      query: async <T = any>(text: string, params?: any[]) => {
+        const res = await testPool.query(text, params);
+        return {
+          rows: res.rows as T[],
+          rowCount: res.rowCount ?? (res.rows ? res.rows.length : 0),
+        };
+      },
+      close: async () => {
+        await testPool.end();
+      },
+      isRealPostgres: true,
+    };
+
+    // Run schema migrations on the new database
+    await initSchemaAndSeed(newAdapter);
+
+    // Close previous adapter if existed
+    if (dbAdapter && dbAdapter.close) {
+      try {
+        await dbAdapter.close();
+      } catch {
+        // Ignore close errors
+      }
+    }
+
+    dbAdapter = newAdapter;
+    process.env.DATABASE_URL = trimmed;
+    process.env.DATABASE_SSL = useSsl ? 'true' : 'false';
+
+    // Persist to .env
+    const { updateEnvVariables } = await import('../services/envService.js');
+    updateEnvVariables({
+      DATABASE_URL: trimmed,
+      DATABASE_SSL: useSsl ? 'true' : 'false',
+    });
+
+    logger.info('Successfully switched database connection to new PostgreSQL database!');
+    return {
+      success: true,
+      message: 'Successfully connected to PostgreSQL! Schema initialized and database is active.',
+      isRealPostgres: true,
+    };
+  } catch (err: any) {
+    logger.error({ err: err.message }, 'Failed to connect to new PostgreSQL database');
+    return {
+      success: false,
+      message: `Connection failed: ${err.message}`,
+      isRealPostgres: dbAdapter?.isRealPostgres || false,
+    };
+  }
+}
+
