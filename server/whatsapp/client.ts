@@ -268,7 +268,7 @@ export class WhatsAppManager {
 
       logLifecycle(LogEvent.WHATSAPP_DISCONNECTED, {
         statusCode,
-        error: errorMsg,
+        reason: errorMsg,
       });
 
       // 1. Logged out explicitly by user or WhatsApp server (Requirement 15)
@@ -292,7 +292,42 @@ export class WhatsAppManager {
         return;
       }
 
-      // 2. Restart required (515) - standard Baileys pairing & protocol restart
+      // 2. Bad session (500) - stored credentials corrupted or invalidated
+      if (statusCode === DisconnectReason.badSession) {
+        logger.warn('WhatsApp reported bad or corrupted session. Clearing invalid credentials.');
+        this.status = 'not_paired';
+        this.sock = null;
+        this.pairingCode = null;
+        this.pairingExpiresAt = null;
+        this.lastError = 'WhatsApp credentials expired or corrupted. Please pair again.';
+        if (this.clearAuthFn) {
+          await this.clearAuthFn();
+        }
+        await this.persistState();
+
+        if (this.reconnectTimer) {
+          clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = null;
+        }
+        return;
+      }
+
+      // 3. Connection replaced (440) - another client or instance connected
+      if (statusCode === DisconnectReason.connectionReplaced) {
+        logger.warn('WhatsApp connection replaced by another session/device.');
+        this.status = 'disconnected';
+        this.sock = null;
+        this.lastError = 'Connection replaced by another active session.';
+        await this.persistState();
+
+        if (this.reconnectTimer) {
+          clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = null;
+        }
+        return;
+      }
+
+      // 4. Restart required (515) - standard Baileys pairing & protocol restart
       if (statusCode === DisconnectReason.restartRequired) {
         logger.info('WhatsApp requested restart (515); restarting socket connection immediately...');
         this.sock = null;
@@ -304,7 +339,7 @@ export class WhatsAppManager {
         return;
       }
 
-      // 3. User is actively pairing with phone number
+      // 5. User is actively pairing with phone number
       const hasActivePairing =
         (this.status === 'pairing' || !!this.pairingCode) &&
         this.pairingExpiresAt &&
@@ -321,7 +356,7 @@ export class WhatsAppManager {
         return;
       }
 
-      // 4. Standard disconnected state
+      // 6. Standard disconnected state
       this.status = 'disconnected';
       this.sock = null;
       this.lastError = `Connection closed (status ${statusCode || 'unknown'}).`;
@@ -331,7 +366,7 @@ export class WhatsAppManager {
       const hasAuth = await hasStoredAuth();
       if (!hasAuth) {
         this.status = 'not_paired';
-        this.lastError = 'WhatsApp not paired. Please enter phone number to pair.';
+        this.lastError = null;
         await this.persistState();
         return;
       }
@@ -778,7 +813,10 @@ export class WhatsAppManager {
       this.pairingExpiresAt !== null && new Date() > this.pairingExpiresAt;
 
     const isConnected = this.whatsappConnected() && this.whatsappAuthenticated();
-    const effectiveStatus: WhatsAppStatus = isConnected ? 'connected' : this.status;
+    let effectiveStatus: WhatsAppStatus = isConnected ? 'connected' : this.status;
+    if (!isConnected && this.status === 'connected') {
+      effectiveStatus = 'disconnected';
+    }
 
     return {
       status: effectiveStatus,
